@@ -10,6 +10,10 @@ This is **Phase 1: mechanical visualisation** from the [PRD](docs/PRD.md). There
 | --- | --- |
 | ![Drive close-up](docs/screenshots/drive-close-up.jpg) | ![X-ray columns](docs/screenshots/xray-columns.jpg) |
 
+## Laptop end-to-end simulation (retrofit phase 1)
+
+The dashboard now also runs the Airo retrofit end to end: the C++ firmware core (`firmware/`) drives the 3D desk through a virtual interface board, original keypad and original controller, and the dashboard's app buttons use the local REST/WebSocket API. Start it with `npm run sim` (needs CMake and a C++17 compiler). See [docs/LAPTOP_SIMULATION.md](docs/LAPTOP_SIMULATION.md).
+
 ## Run it
 
 ```bash
@@ -17,11 +21,14 @@ npm install
 npm run dev        # http://localhost:5173
 npm test           # unit tests for the mechanical math and simulation
 npm run build      # type-check and production build
+npm run sim        # firmware host + dashboard (laptop end-to-end simulation)
+npm run firmware:test   # C++ firmware core unit tests
+npm run test:e2e        # spec 12.1 test matrix against the real firmware host
 ```
 
 Everything runs locally and offline.
 
-**Controls:** UP / DOWN / STOP buttons, or the keyboard (↑, ↓, Space). Drag to orbit, scroll to zoom, right-drag to pan. Use the speed control (down to 0.02×) to slow the simulation and follow the worm and gear teeth.
+**Controls:** the left panel is the Airo app (hold UP/DOWN, Sitting, Standing, STOP); the right panel has the desk's original keypad (↑ / ↓ keys hold its arrows) and the virtual selector. Space sends STOP. Drag to orbit, scroll to zoom, right-drag to pan. Use the speed control (down to 0.02×) to slow the simulation and follow the worm and gear teeth.
 
 ## Architecture
 

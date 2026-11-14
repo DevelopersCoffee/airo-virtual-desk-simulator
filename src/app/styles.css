@@ -112,3 +112,23 @@ button:disabled { opacity: 0.4; cursor: default; }
   .right { padding: 0 20px 20px; }
   .scene-card { min-height: 480px; }
 }
+
+/* Laptop end-to-end simulation */
+.app-panel { display: flex; flex-direction: column; gap: 14px; }
+.dot.off { background: #4b5563; }
+.dot.fault { background: var(--red); }
+.err { color: #f87171; }
+code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; background: #0f131a; padding: 1px 5px; border-radius: 5px; }
+.btn.warn { background: rgba(245, 158, 11, 0.18); border-color: var(--amber); color: var(--amber); }
+.telemetry.compact > div { padding: 4px 0; font-size: 12px; }
+.log { display: flex; flex-direction: column; gap: 3px; min-height: 40px; }
+.log-ok { color: var(--green); }
+.log-warn { color: var(--amber); }
+.log-err { color: #f87171; }
+.pill { font-size: 11px; padding: 3px 8px; border-radius: 999px; }
+.pill.ok { background: rgba(34, 197, 94, 0.15); color: var(--green); }
+.pill.off { background: #222a38; color: var(--muted); }
+.keypad { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; padding: 10px; border-radius: 12px; background: #0f131a; border: 1px solid var(--line); }
+.key { height: 44px; border-radius: 9px; border: 1px solid #2c3442; background: #1d232e; font-weight: 600; user-select: none; touch-action: none; }
+.key.down { background: var(--blue); border-color: var(--blue); }
+.btn { touch-action: none; user-select: none; }

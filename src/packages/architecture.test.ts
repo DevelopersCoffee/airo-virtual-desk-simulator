@@ -6,7 +6,15 @@ import { describe, expect, it } from 'vitest';
  * The engine packages must stay free of rendering and UI code so they can be
  * reused by firmware simulation, tests and a future hardware adapter.
  */
-const ENGINE_PACKAGES = ['desk-profiles', 'mechanical-engine', 'motor-engine', 'controller', 'simulation-engine'];
+const ENGINE_PACKAGES = [
+  'desk-profiles',
+  'mechanical-engine',
+  'motor-engine',
+  'controller',
+  'simulation-engine',
+  'desk-hardware',
+  'airo-link',
+];
 const FORBIDDEN = /from\s+['"](react|react-dom|three|@react-three\/[^'"]+)['"]|from\s+['"]\.\.\/(visualization)/;
 
 function files(dir: string): string[] {
@@ -28,6 +36,17 @@ describe('package boundaries', () => {
   it('the mechanical engine does not depend on the motor or controller', () => {
     for (const f of files(join(__dirname, 'mechanical-engine'))) {
       expect(readFileSync(f, 'utf8'), f).not.toMatch(/\.\.\/(motor-engine|controller|simulation-engine)/);
+    }
+  });
+});
+
+describe('one implementation of command arbitration (conflict C8)', () => {
+  it('no TypeScript package implements leases, dedupe or keypad-wins logic', () => {
+    for (const pkg of ['desk-hardware', 'controller', 'simulation-engine']) {
+      for (const f of files(join(__dirname, pkg))) {
+        if (f.endsWith('.test.ts')) continue;
+        expect(readFileSync(f, 'utf8'), f).not.toMatch(/lease_deadline|request_id|manual_quiet|CommandService/);
+      }
     }
   });
 });

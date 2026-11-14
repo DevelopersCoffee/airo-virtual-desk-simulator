@@ -1,14 +1,19 @@
 {
   "name": "airo-virtual-desk-simulator",
   "version": "0.1.0",
-  "description": "3D virtual standing desk simulator for the Airo Adaptive Drive (Phase 1: mechanical visualization)",
+  "description": "3D virtual standing desk simulator and laptop end-to-end simulation of the Airo retrofit controller",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit -p tsconfig.json && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "firmware:build": "cmake -S firmware -B firmware/build -DCMAKE_BUILD_TYPE=Release && cmake --build firmware/build -j",
+    "firmware:test": "npm run firmware:build && ctest --test-dir firmware/build --output-on-failure",
+    "airo": "npm run firmware:build && ./firmware/build/airo-host",
+    "test:e2e": "vitest run -c vitest.e2e.config.ts",
+    "sim": "node scripts/dev-all.mjs"
   },
   "dependencies": {
     "@react-three/drei": "^10.7.9",

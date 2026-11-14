@@ -17,4 +17,8 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
+      - name: Firmware core unit tests (C++, host build)
+        run: npm run firmware:test
+      - name: End-to-end simulation matrix (spec 12.1)
+        run: npm run test:e2e
       - run: npm run build
