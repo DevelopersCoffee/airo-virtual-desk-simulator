@@ -18,6 +18,12 @@ export interface SimulationOptions {
   createMotor?: (profile: DeskProfile) => MotorModel;
   /** Swap in another controller (future adaptive controller). */
   createController?: (profile: DeskProfile) => Controller;
+  /**
+   * Called at the start of every fixed step with the simulated time in
+   * seconds. Lets attached hardware models (keypad, interface board) run on
+   * the same clock as the mechanism.
+   */
+  beforeStep?: (timeS: number) => void;
 }
 
 export interface SimulationSnapshot {
@@ -73,6 +79,7 @@ export class Simulation {
   private lastStatus: ControllerStatus = 'idle';
   private readonly createMotor: (p: DeskProfile) => MotorModel;
   private readonly createController: (p: DeskProfile) => Controller;
+  private readonly beforeStep?: (timeS: number) => void;
 
   constructor(profile: DeskProfile, opts: SimulationOptions = {}) {
     assertValidProfile(profile);
@@ -80,6 +87,7 @@ export class Simulation {
     this.clock = new FixedStepClock(this.dtS, opts.maxStepsPerAdvance ?? 2000);
     this.createMotor = opts.createMotor ?? defaultMotor;
     this.createController = opts.createController ?? defaultController;
+    this.beforeStep = opts.beforeStep;
     this.profile = profile;
     this.params = mechanicalParamsFromProfile(profile);
     this.motor = this.createMotor(profile);
@@ -109,6 +117,7 @@ export class Simulation {
   /** Run exactly one fixed timestep, regardless of pause state. */
   step(): void {
     const dt = this.dtS;
+    this.beforeStep?.(this.steps * dt);
     const out = this.controller.update({ heightMm: this.mech.heightMm, limit: this.mech.limit }, dt);
     const motor = this.motor.step({ dutyCycle: out.dutyCycle, dtS: dt });
     const next = stepMechanics(this.mech, motor.rpm, dt, this.params);
