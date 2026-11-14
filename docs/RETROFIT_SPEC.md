@@ -1,26 +1,57 @@
-# Airo Smart Desk Retrofit: Circuit Architecture and Software Protocol Specification
+# Airo Smart Desk Controller: Retrofit Architecture and Protocol Specification
 
 | | |
 |---|---|
-| Status | Draft v0.1, for review before buying parts or touching any wiring |
+| Status | Draft v0.2, for review before buying interface parts or touching any wiring |
 | Date | 2026-11-14 |
-| Scope | Add local Wi-Fi app control to an existing desk while keeping the original motor, controller and five-button keypad |
-| Out of scope | Replacing the motor, gearbox or motor driver; cloud services; changes to the controller's firmware |
+| Scope | Add local Wi-Fi app control (and later Alexa) to the existing Green Soul desk while keeping its original motor, controller and five-button keypad |
+| Out of scope | Replacing the motor, gearbox or motor driver; changing the controller's firmware; cloud services in the core device |
 
 ## 0. How to read this document
 
-Everything about **this particular desk's** keypad interface is unknown until it is measured. The document therefore:
+Nothing about **this desk's** keypad interface has been measured yet. The document therefore:
 
-1. Defines a safe procedure to find out which interface the keypad uses (section 4).
-2. Specifies a circuit for each possible outcome (section 5).
-3. Specifies one firmware architecture and one local API that work the same way whichever circuit is used (sections 7 and 8).
+1. Defines a safe, passive procedure to find out which interface the keypad uses (section 5).
+2. Specifies the interface board circuit for each possible outcome (section 6).
+3. Specifies one firmware core, one command schema and one local API that behave identically whichever circuit is used, and identically on a laptop simulation and on the real board (sections 8–11).
 
-Facts are tagged as follows:
+Facts are tagged:
 
-- **[VERIFIED-DESK]**: measured on the user's desk. *Nothing in this draft has this tag yet.*
-- **[COMMUNITY]**: reported by public reverse-engineering projects for other Jiecang-based desks. Plausible, not confirmed for this desk.
+- **[VERIFIED-DESK]**: measured on the user's desk. *Nothing has this tag yet.*
+- **[COMMUNITY]**: reported by public reverse-engineering of other Jiecang-based desks. Plausible, not confirmed here.
 - **[ASSUMPTION]**: a design assumption that must be checked.
-- **[UNKNOWN]**: listed in Open Questions (section 12).
+- **[UNKNOWN]**: listed in Open Questions (section 17).
+- **⚠ CONFLICT**: a point where the refined plan and an earlier safety finding disagree. Each is resolved or left as a decision in section 0.2.
+
+### 0.1 Changes in v0.2
+
+| Area | v0.1 | v0.2 |
+|---|---|---|
+| Processor | ESP32-WROOM-32 | **ESP32-S3** ("Airo Core") |
+| Power and debug | USB 5 V | **USB-C** power, flashing and UART/USB-CDC diagnostics |
+| Setup | SoftAP captive page | **Bluetooth LE** provisioning |
+| Hardware split | One module | **Airo Core** + separate replaceable **Airo Interface Board** with Ports A (keypad), B (controller), C (Core) |
+| Airo-side connectors | RJ45/RJ12 pass-through | **Keyed custom connector** for Port C; Ports A/B see section 3.3 |
+| Commands | `up`/`down`/`preset` actions | **Unified command schema** `desk.up`, `desk.down`, `desk.stop`, `desk.sitting`, `desk.standing`, `desk.get_status` |
+| Integrations | None | **Alexa later via Home Assistant**; optional MQTT bridge |
+| Testing | Bench plan only | **Laptop end-to-end simulation** with `VirtualHardwareAdapter` and `Esp32HardwareAdapter` sharing one firmware core |
+| Purchasing | Block list | **Staged purchase list and budget** (buy now vs wait) |
+| Roadmap | Not covered | **Six-phase retrofit roadmap** |
+
+### 0.2 Conflicts flagged
+
+| # | Refined plan says | Earlier finding | Resolution in this spec |
+|---|---|---|---|
+| C1 | Buy **ESP32-DevKitC-32E V4** (₹600) | Architecture now says **ESP32-S3** | ⚠ The DevKitC-32E is a classic ESP32 (WROOM-32E), not an S3. Buy an **ESP32-S3-DevKitC-1** (or equivalent S3 board with USB-C) instead so the prototype matches the product. Price not yet checked. |
+| C2 | Avoid RJ45; use a dedicated keyed connector | The ultimate bypass is "unplug Airo, plug the keypad back into the controller" (G4) | ⚠ Airo's **own** connections (Port C, Core ↔ Interface Board) use the keyed custom connector. **Ports A and B must mate with whatever connector the desk already uses** (possibly RJ45 or RJ12), otherwise the keypad cannot be plugged into Airo without cutting its cable, and Airo cannot plug into the controller. The desk's connector is not Airo's choice. |
+| C3 | Buy two **RJ45** passive breakouts now | Desk connector type is unknown | ⚠ Look at the keypad plug first (discovery step 1, a 2-minute check needing no tools). Buy RJ45 breakouts only if it is an 8-pin modular plug; RJ12 (6-pin) or a proprietary plug needs a different breakout. |
+| C4 | "Presets require confirmed position feedback" | Presets can be executed by the controller's own memory (replaying the keypad's sit/stand button), which needs no feedback in Airo | ⚠ **Decision needed (Q14).** This spec applies the rule to *Airo-computed* target heights (never offered without feedback), and allows *controller-native* presets without feedback, because the controller already performs them from the keypad today. If the user wants the stricter reading, `desk.sitting`/`desk.standing` stay disabled until height feedback exists. |
+| C5 | "STOP has priority" | Physical keypad must always win | Consistent once ordered: hardware bypass > physical keypad > STOP > app movement (section 7.2). |
+| C6 | "Conflict is rejected or safely arbitrated" | Shared encoded button lines make simultaneous presses dangerous (Down=1 + Up=2 reads as Preset 1) | Kept: on encoded lines, Airo never drives in parallel with the keypad; a fail-safe selector chooses one source (section 6.3). Conflicts resolve to "keypad wins, app releases". |
+| C7 | Virtual selector offers "Electrical / digital / bypass" modes | User's own note: these are capabilities, not modes to switch between until the circuit is known | Consistent. The real board is built for exactly one interface case; only bypass vs Airo-path is switchable at runtime. The simulator may model all cases. |
+| C8 | Simulation: "same firmware logic" | The existing simulator has a TypeScript `controller` package | ⚠ The TypeScript simulator must **not** grow a second implementation of command arbitration. The C++ firmware core runs on the laptop and drives the 3D simulator through `VirtualHardwareAdapter` (section 12). The TS controller package models the **desk's** controller, not Airo's logic. |
+| C9 | ESP32 logic is 3.3 V; logic analyzer and USB-TTL adapter in purchase list | Desk lines are reported to be pulled up to 5 V | Kept: never connect any ESP32 pin or the USB-TTL adapter to desk pins directly. Check the logic analyzer's input range (most 24 MHz clones accept 0–5 V, some do not) before probing. |
+| C10 | Generic relay modules | Bypass must work with the ESP32 completely unpowered | Consistent with the user's own warning. Generic relay modules are often active-low and use NO contacts; neither is acceptable for the bypass path. |
 
 ---
 
@@ -31,523 +62,630 @@ Facts are tagged as follows:
 | # | Goal |
 |---|---|
 | G1 | Original motor, controller and five-button keypad stay in service, unmodified. |
-| G2 | The Airo app can trigger the five existing functions over local Wi-Fi. No new desk functions are invented. |
-| G3 | Physical keypad and app coexist. The physical keypad always works, and always wins a conflict. |
-| G4 | Removing power from, or unplugging, the Airo module returns the desk to exactly its factory behaviour. |
+| G2 | The app (and later Alexa) triggers the five existing functions. No new desk functions are invented. |
+| G3 | Physical keypad and app coexist. The keypad always works and always wins a conflict. |
+| G4 | Removing power from, or unplugging, Airo returns the desk to its factory behaviour. |
 | G5 | No two active drivers are ever connected to the same signal line. |
-| G6 | No cloud dependency. The module works on a LAN with no internet. |
-| G7 | No wires are cut. All connections are made through a plug-in pass-through adapter. |
+| G6 | No cloud dependency in the core device. Works on a LAN with no internet. |
+| G7 | No wires are cut. All desk connections are plug-in. |
+| G8 | Electronics and firmware logic are testable end-to-end on a laptop before touching the desk. |
+| G9 | Alexa can be added later without changing interface or motor-side hardware. |
 
 ### Non-goals (v1)
 
-- Absolute height control if the controller does not report height (section 9).
-- Re-implementing the controller's collision detection, end-stops or motor current limits. These remain the controller's job and are never bypassed.
-- Exposing reset/recalibration in the app before its exact behaviour is verified.
+- Absolute height control without height feedback.
+- Re-implementing collision detection, end-stops or current limits. These remain the desk controller's job.
+- Exposing reset/recalibration before its behaviour is verified.
+- Matter support. A later integration decision, not a v1 requirement.
 
 ---
 
-## 2. System architecture
+## 2. Hardware summary
 
-```
-                 ┌──────────────────────┐
-                 │  Airo app (phone)    │
-                 │  local Wi-Fi only    │
-                 └──────────┬───────────┘
-                            │ HTTP + WebSocket (LAN)
-┌──────────────┐   ┌────────┴────────────────────────────────────────┐   ┌──────────────────┐   ┌────────┐
-│ Original     │   │ Airo interface module                           │   │ Original desk    │   │Original│
-│ keypad       ├───┤  keypad-side jack     ESP32-WROOM-32            ├───┤ controller       ├───┤ motor  │
-│ (5 buttons)  │   │  ├─ sense taps (high-Z, isolated) ──► ESP32 in  │   │ (Jiecang-style,  │   │        │
-└──────────────┘   │  ├─ selector / bypass (fail-safe = keypad)      │   │  [ASSUMPTION])   │   └────────┘
-                   │  └─ injector (opto / photoMOS / open-drain)     │   └──────────────────┘
-                   │  controller-side plug                           │
-                   │  USB 5 V power, independent of the desk         │
-                   └─────────────────────────────────────────────────┘
-```
+| Interface | Technology | Purpose |
+|---|---|---|
+| Main processor | ESP32-S3 (Airo Core) | Control logic, local API |
+| Power | USB-C, 5 V, independent of the desk | Power and development |
+| Wireless | Wi-Fi 2.4 GHz | App connectivity |
+| Discovery | mDNS | Automatic discovery on the LAN |
+| Commands | REST | `desk.*` commands |
+| Live updates | WebSocket | Status and hold-to-move leases |
+| Setup | Bluetooth LE | Wi-Fi provisioning and pairing |
+| Desk connection | Airo Interface Board (Ports A/B/C) | Existing controller interface |
+| Debugging | USB-C (USB-CDC / UART) | Logs, diagnostics, flashing |
 
-Physical form: the keypad's existing cable is unplugged from the controller and plugged into the module's **keypad-side jack**. A short patch lead goes from the module's **controller-side plug** into the controller's original keypad socket. If the controller has a second, unused port (section 4.1, step 3) the module may use that instead and the keypad is not touched at all.
-
-**Ultimate bypass:** unplug the module and plug the keypad back into the controller. This must always remain possible, so the module never uses a connector the keypad cannot plug back into.
+ESP32-S3 notes: GPIO is 3.3 V and **not 5 V tolerant**; avoid strapping pins (GPIO0, 3, 45, 46) and, on modules with octal PSRAM, GPIO35–37 for interface signals; native USB uses GPIO19/20.
 
 ---
 
-## 3. The five keypad functions
+## 3. System architecture
 
-| Physical button | App action | API action id | Notes |
+```
+ Control inputs:   Physical keypad                Airo app (mobile / laptop)    Alexa (later, via Home Assistant)
+                         │                                    │  Wi-Fi (REST/WS), BLE for setup only
+                         │                                    ▼
+                         │                     ┌──────────────────────────────┐
+                         │                     │ Airo Core — ESP32-S3         │
+                         │                     │ local API · discovery ·      │
+                         │                     │ command arbitration · safety │
+                         │                     └──────────────┬───────────────┘
+                         │                                    │ Port C (keyed custom connector)
+                         ▼                                    ▼
+                  ┌──────────────────────────────────────────────────────────────┐
+     Port A ─────►│ Airo Interface Board                                         │◄──── Port B
+   (keypad plug)  │ sense taps · injector or UART path · fail-safe selector ·    │ (to controller)
+                  │ MANUAL ONLY switch · hardware watchdog · test points         │
+                  └──────────────────────────────────────────────────────────────┘
+                                                      │
+                                         Original desk controller ──► Original motor and lifting mechanism
+```
+
+### 3.1 Airo Core
+
+ESP32-S3 dev board (prototype), later a custom PCB. Runs the firmware core (section 8). Powered by USB-C.
+
+### 3.2 Airo Interface Board
+
+A separate, replaceable board, so the Core never changes when the interface case is discovered. Ports:
+
+| Port | Connects to | Connector |
+|---|---|---|
+| A | Original keypad cable | Must accept the keypad's **native plug** (section 3.3) |
+| B | Original controller's keypad socket | Short lead with the **native plug** |
+| C | Airo Core | Keyed custom connector (proposed below) |
+
+All signals have labelled test points. No pin numbers are assigned to Ports A/B until discovery is complete.
+
+### 3.3 Connector policy (⚠ C2)
+
+- **Airo-to-Airo (Port C):** keyed, polarised, latching wire-to-board connector, for example JST-PH or JST-XH 2.0/2.5 mm, or a Molex Micro-Fit for the production board. Power and signal contacts separated by at least one ground pin. Keyed so it cannot be inserted reversed.
+- **Desk side (Ports A and B):** whatever the desk uses. If it is RJ45, Ports A and B are RJ45 even though Airo avoids RJ45 elsewhere. This is what lets the keypad plug into Airo, Airo plug into the controller, and the keypad plug straight back into the controller if Airo is removed.
+
+Proposed Port C pinout (10-pin, keyed; final assignment after discovery):
+
+| Pin | Signal | Direction (Core view) | Notes |
 |---|---|---|---|
-| UP arrow | Raise desk | `up` | Hold-to-move expected **[ASSUMPTION]** |
-| DOWN arrow | Lower desk | `down` | Hold-to-move expected **[ASSUMPTION]** |
-| Circular arrow | Reset / recalibration | `reset` | **[UNKNOWN]** exact behaviour. Hidden in the app in v1 (section 8.6). |
-| Sitting icon | Sitting preset | `preset` + `sit` | One-touch or hold-to-run **[UNKNOWN]** |
-| Standing icon | Standing preset | `preset` + `stand` | One-touch or hold-to-run **[UNKNOWN]** |
-| (none) | Stop | `stop` | App-only concept. Implemented by the method in section 6.3. |
+| 1 | GND | | |
+| 2 | +3V3 (Core → board logic) | out | Powers board-side 3.3 V logic only; relay coils from 5 V |
+| 3 | +5V (USB-C VBUS) | out | Relay coils / opto LEDs; fused or current-limited |
+| 4 | GND | | Separates power from signals |
+| 5 | HEARTBEAT | out | Watchdog toggle (section 6.1 R7) |
+| 6 | ARM | out | Requests selector to the Airo path; ANDed with watchdog and MANUAL ONLY |
+| 7 | BYPASS_STATE | in | Reads MANUAL ONLY switch and actual selector position |
+| 8 | DATA_TX / INJ_SDA | out | UART TX (digital case) or I²C to an I/O expander driving injectors (switch cases) |
+| 9 | DATA_RX / INJ_SCL | in/out | UART RX from keypad side, or I²C clock |
+| 10 | SENSE_IRQ / DTX_RX | in | Keypad activity interrupt, or controller-to-keypad UART listen line |
 
-The app reproduces these functions. It does not add memory-set, unit change, limit-set or calibration commands, even where the controller may support them.
+Using a small I²C expander (for example MCP23017) on the Interface Board keeps Port C at a fixed width whatever the number of desk lines.
 
 ---
 
-## 4. Discovery: finding out which interface the keypad uses
+## 4. The five keypad functions and command names
 
-### 4.1 Safety rules for discovery
+| Physical button | Command | Notes |
+|---|---|---|
+| UP arrow | `desk.up` | Hold-to-move with lease **[ASSUMPTION]** |
+| DOWN arrow | `desk.down` | Hold-to-move with lease **[ASSUMPTION]** |
+| Sitting icon | `desk.sitting` | Controller-native preset; see C4 |
+| Standing icon | `desk.standing` | Controller-native preset; see C4 |
+| Circular arrow | `desk.reset` (reserved) | **[UNKNOWN]**; not in the v1 command set (section 10.7) |
+| (none) | `desk.stop` | App-side concept; method in section 7.3 |
+| (none) | `desk.get_status` | Read-only |
 
-1. **Desk empty, nothing under it.** Clear the area under and around the desktop before any powered test.
-2. **No cutting or soldering on the original cable.** Use a pass-through breakout (for example an RJ45 or RJ12 female-to-female coupler with screw terminals, or a keystone breakout board) so every line is reachable on a terminal.
-3. **Unpowered first.** Do continuity and resistance tests with the controller unplugged from mains.
-4. **Powered measurements are passive only.** Measure with a multimeter or a logic analyzer through a series resistor (10 kΩ) on each probe line. Never connect an ESP32 GPIO directly to a keypad line.
-5. **Never short a line to ground or to another line to "see what happens"** until section 4.3 has identified that line as a switch input.
-6. **Hand on the mains switch** during the first powered test of anything that can cause motion.
+---
 
-### 4.2 Procedure
+## 5. Discovery: identifying the keypad interface
+
+### 5.1 Safety rules
+
+1. Desk empty, nothing under it, area clear.
+2. No cutting or soldering on the original cable. Use a passive breakout of the right type (⚠ C3).
+3. Unpowered first: continuity and resistance tests with the controller unplugged from mains.
+4. Powered measurements are passive only: multimeter, or logic analyzer through 10 kΩ series resistors. Never connect an ESP32 pin or the USB-TTL adapter to a desk pin.
+5. Never short a line to see what happens until it is identified as a switch input.
+6. Hand on the mains switch during the first powered test of anything that can cause motion.
+
+### 5.2 Procedure
 
 | Step | Action | Tools | What it tells us |
 |---|---|---|---|
-| 1 | Photograph the controller label and both ends of the keypad cable. Record model number (for example `JCB35N2`, `JCB36N2`, `JCHT35…`), connector type and number of contacts. | Phone camera | Model lookup, RJ45 (8 pins) vs RJ12 (6 pins) vs proprietary. |
-| 2 | Photograph the keypad PCB if it can be opened by removing screws only (no clips forced). Look for a microcontroller chip vs only tactile switches and resistors. | Screwdriver | A keypad with no chip cannot speak a digital protocol. |
-| 3 | Check whether the controller has a second unused port (often labelled for a Bluetooth/app dongle). | Eyes | If yes, Case B0 (section 5.4) may avoid touching the keypad path. |
-| 4 | **Unpowered:** with the keypad plugged into the breakout but not into the controller, measure resistance between every pair of pins with each button released, then with each button held in turn. | Multimeter | Simple switches show a near-0 Ω change between two pins per button. A resistor ladder shows different resistances on one pin pair. No change at all suggests a chip-based keypad. |
-| 5 | **Powered, keypad connected, no button:** measure DC voltage of each pin to GND (GND identified in step 4 or by the controller label). | Multimeter | Idle 5 V on several pins = pulled-up inputs **[COMMUNITY]**. A pin around 4–5 V that flickers = possible UART line. |
-| 6 | **Powered, passive capture:** attach a logic analyzer (8-channel, 24 MHz class, with PulseView/sigrok) through 10 kΩ series resistors to every non-power pin. Capture 10 s idle, then each button pressed for 1 s and released. | Logic analyzer | Distinguishes all cases in 4.3 definitively. |
-| 7 | If a line shows serial traffic, decode it as UART 9600 8N1 first **[COMMUNITY]**, then try other common rates. Save captures to the repo under `hardware/captures/`. | PulseView UART decoder | Frame structure, command bytes, height reports. |
+| 1 | Photograph the controller label and both ends of the keypad cable. Record model (for example `JCB35N2`, `JCB36N2`), connector type and contact count. | Phone | Model lookup; RJ45 vs RJ12 vs proprietary; which breakout to buy |
+| 2 | If the keypad opens with screws only, photograph the PCB. Microcontroller chip, or only switches and resistors? | Screwdriver | No chip = no digital protocol |
+| 3 | Look for a second, unused controller port (often for a Bluetooth dongle). | Eyes | Case B0 possible |
+| 4 | **Unpowered:** keypad into breakout, not into controller. Resistance between every pin pair, buttons released, then each held. | Multimeter | Switch per line vs encoded lines vs ladder vs chip |
+| 5 | **Powered, no button:** DC voltage of each pin to GND. | Multimeter | 5 V pull-ups **[COMMUNITY]**; supply pin; possible UART idle-high lines |
+| 6 | **Powered passive capture:** logic analyzer on all non-power pins through 10 kΩ. 10 s idle, then each button 1 s. | Logic analyzer + PulseView | Settles the case |
+| 7 | Decode serial lines as UART 9600 8N1 first **[COMMUNITY]**, then other rates. Commit captures to `hardware/captures/`. | PulseView | Frames, height reports |
 
-### 4.3 Decision tree
+### 5.3 Decision tree
 
 ```
 Does pressing a button change resistance between two pins (unpowered)?
-├── YES, each button shorts its own pin to GND (or to a common) ────────► Case A1: plain switches (5.2)
-├── YES, buttons combine onto 2–4 shared lines (binary code)  ─────────► Case A2: encoded switch lines (5.2.3)
-├── YES, one pin pair, different resistance per button  ──────────────► Case A3: resistor ladder (5.2.4)
-└── NO change ─► Powered capture shows bytes on a line when a button is pressed?
-                 ├── YES, and no other line changes  ───────────────────► Case B: digital protocol (5.3)
-                 └── YES, and button lines also change  ────────────────► Case C: hybrid (lines for buttons,
-                                                                          serial for display/height) (5.2.3 + 5.3.2)
+├── YES, each button shorts its own pin to GND/common ─────────────► Case A1: plain switches (6.2)
+├── YES, buttons combine onto 2–4 shared lines (binary code) ─────► Case A2: encoded lines (6.3)
+├── YES, one pin pair, different resistance per button ───────────► Case A3: resistor ladder (6.4)
+└── NO change ─► Powered capture shows bytes when a button is pressed?
+                 ├── YES, no other line changes ──────────────────► Case B: digital protocol (6.5)
+                 └── YES, and button lines also change ───────────► Case C: hybrid (6.3 + 6.5 listen)
+Spare controller port that accepts frames? ───────────────────────► Case B0 (6.6), preferred if it works
 ```
 
-Community reports for Jiecang controllers describe **Case C** on handset ports: buttons appear as encoded lines `HS0`–`HS3`, pulled up to 5 V and pulled low by the keypad, while separate `DTX`/`HTX` lines carry framed serial data for display handsets **[COMMUNITY]**. A five-button keypad with no display may use only the button lines **[ASSUMPTION]**.
+Community reports for Jiecang handset ports describe **Case C**: buttons as encoded lines `HS0`–`HS3` pulled up to 5 V and pulled low by the keypad, plus `DTX`/`HTX` serial for display handsets **[COMMUNITY]**. A five-button keypad without a display may use only the button lines **[ASSUMPTION]**.
 
-### 4.4 Exit criteria
+### 5.4 Exit criteria
 
-Discovery is complete when the following table is filled in and committed to this document with the **[VERIFIED-DESK]** tag:
+Discovery is complete when this table is filled in and tagged **[VERIFIED-DESK]**:
 
 | Item | Value |
 |---|---|
 | Controller model | |
 | Connector type and pin count | |
-| Pin map (function per pin) | |
-| Supply voltage on the connector and idle voltage on each signal pin | |
-| Interface case (A1 / A2 / A3 / B / C) | |
-| Line state or frame for each of the five buttons | |
-| Does the controller report height? On which line, in what format? | |
-| Preset behaviour: one-touch or hold-to-run | |
-| What the circular-arrow button does on short press and on long press | |
-| What stops a preset movement in progress | |
+| Pin map | |
+| Supply voltage and idle voltage per signal pin | |
+| Interface case (A1 / A2 / A3 / B / B0 / C) | |
+| Line state or frame per button | |
+| Height reported? Line, format, units | |
+| Presets one-touch or hold-to-run | |
+| Circular-arrow behaviour, short and long press | |
+| What stops a preset move in progress | |
 
 ---
 
-## 5. Circuit architecture
+## 6. Interface Board circuits
 
-### 5.1 Rules common to every case
+### 6.1 Rules common to every case
 
 | Rule | Detail |
 |---|---|
-| R1. Independent power | The ESP32 is powered from its own USB 5 V supply. The module does not draw from the controller's keypad 5 V unless discovery shows ample spare current. **[ASSUMPTION]** Community notes mention around 300 mA available on Jiecang handset ports, which is not enough margin for ESP32 Wi-Fi peaks. |
-| R2. Galvanic isolation preferred | Where the interface allows (Case A), the desk side and ESP32 side share no ground: all coupling is through optocouplers or photoMOS relays. Where it does not (Case B UART), grounds are joined at one point only. |
-| R3. No 5 V on ESP32 pins | ESP32 GPIO absolute maximum is about 3.6 V. Every desk line reaches the ESP32 only through an optocoupler, a 5 V-tolerant buffer, or a resistor divider. |
-| R4. One driver per line | A desk line is driven by at most one active source at any moment. Open-drain "pull-low only" sources in parallel are allowed only where the controller reads each line independently (Case A1). Everywhere else a selector chooses exactly one source. |
-| R5. Fail-safe default = keypad | Every selector's **unpowered** state connects the original keypad straight through to the controller. Relays use normally-closed contacts for the keypad path. |
-| R6. Physical bypass switch | A panel toggle `MANUAL ONLY` forces every selector to the keypad path and cuts injector outputs, independent of ESP32 firmware. |
-| R7. Hardware watchdog | Selector relays and injectors are enabled only while the ESP32 toggles a `HEARTBEAT` pin. A retriggerable monostable (for example 74HC123, or a small dedicated supervisor) drops the enable within ~200 ms of the toggling stopping. |
-| R8. Sense taps are high impedance | Every keypad line the ESP32 watches is sensed through ≥ 10 kΩ (or an opto LED with series resistor sized for ≤ 1 mA) so sensing cannot change what the controller sees. |
+| R1. Independent power | Airo is powered from its own USB-C supply. It does not draw from the keypad port's 5 V **[ASSUMPTION]**; reported budgets around 300 mA leave no margin for Wi-Fi peaks. The desk's 12 V adapter is not used. |
+| R2. Isolation preferred | Switch cases use optocouplers/photoMOS, so desk and Airo grounds stay separate. UART cases join grounds at one point. |
+| R3. No 5 V on ESP32-S3 pins | Every desk line reaches the Core through an opto, a 5 V-tolerant buffer, or a divider. |
+| R4. One driver per line | Parallel pull-low sources only where each button has its own line (A1). Otherwise a selector chooses exactly one source. |
+| R5. Fail-safe default = keypad | Every selector's **unpowered** state connects keypad straight through to controller (relay NC contacts or normally-closed photoMOS). Analog switch ICs are not the fail-safe element. |
+| R6. MANUAL ONLY switch | Panel toggle that forces the keypad path and cuts injector outputs in hardware, independent of firmware. |
+| R7. Hardware watchdog | Selector and injectors enabled only while the Core toggles `HEARTBEAT`. A retriggerable monostable (for example 74HC123) drops the enable within ~200 ms of toggling stopping. |
+| R8. High-impedance sensing | Sense taps ≥ 10 kΩ or opto LED at ≤ 1 mA, so sensing never changes what the controller sees. |
 
-### 5.2 Case A: keypad is plain switches
-
-#### 5.2.1 Case A1, one line per button
-
-Each button connects its line to GND (or to a common). The controller has a pull-up on each line **[ASSUMPTION]**.
+### 6.2 Case A1: one line per button
 
 ```
- Controller side                                     Keypad side
- line_UP ──────────────┬───────────────────────────── line_UP ──┤ UP button ├── GND
-   (pulled up to 5 V)  │
-                       │ photoMOS output (normally open)
-                       ├──┤ AQY212 / TLP222A class ├── GND_desk
-                       │
-                       └── 22 kΩ ── PC817 LED ── GND_desk   (sense: ESP32 sees line low)
-                                       │
-                                       └► phototransistor ─► ESP32 GPIO (3.3 V pull-up)
- ESP32 GPIO ── 330 Ω ── photoMOS LED ── ENABLE (from watchdog + MANUAL ONLY switch)
+ Port B line_UP ──────┬──────────────────────────── Port A line_UP ──┤ UP ├── GND
+  (pulled up to 5 V)  │
+                      ├──┤ photoMOS NO (AQY212 / TLP222A class) ├── GND_desk
+                      └── 22 kΩ ── PC817 LED ── GND_desk ─► phototransistor ─► Core (sense)
+ Core / expander ── 330 Ω ── photoMOS LED ── ENABLE (watchdog AND MANUAL ONLY AND ARM)
 ```
 
-- The photoMOS output sits **in parallel** with the physical button. Both can only pull the line low. Neither drives the line high, so they never fight (R4 allows this).
-- Repeat for each of the five lines: five injectors, five sense channels.
-- Why photoMOS over a plain phototransistor optocoupler: it switches in both directions, has very low leakage, and does not care which side is positive. A PC817 output also works if the polarity is confirmed.
-- Why not a mechanical relay per button: slower, audible, wears out. A relay is acceptable for a first bench prototype.
-- **Conflict rule:** if the sense channel shows a line low while the ESP32 is not driving it, a physical button is pressed. Firmware releases all its own injectors (section 6.2).
+PhotoMOS output in **parallel** with each button. Both only pull low, so they cannot fight. Five injectors, five sense channels. If sense shows a line low that Airo is not driving, a physical button is pressed: release everything (section 7.2). Behaviour with two lines low at once is **[UNKNOWN]** (Q9).
 
-#### 5.2.2 Pressing two lines at once
+### 6.3 Case A2 / Case C button lines: encoded lines
 
-In Case A1, if the user presses UP while the app is holding DOWN, the controller sees both pressed. Its response is controller-defined **[UNKNOWN]**. Firmware must release within 20 ms of seeing a manual press (section 6.2), and the bench test plan must check what the controller does with two lines low.
+Reported codes on one Jiecang controller (`HS2 HS1 HS0`, inverted): Down = 1, Up = 2, Preset 1 = 3, Preset 2 = 4 **[COMMUNITY]**.
 
-#### 5.2.3 Case A2 and Case C button lines, encoded lines
-
-Community reports describe Jiecang handsets that encode buttons as a binary number on lines `HS0`–`HS3`, each pulled to 5 V by the controller and pulled low by the keypad. Reported codes for one controller (`HS2 HS1 HS0` inverted): Down = 1, Up = 2, Preset 1 = 3, Preset 2 = 4 … **[COMMUNITY]**.
-
-This changes the safety analysis completely. Parallel pull-downs **are not safe** here: if the keypad pulls `HS0` (Down = 1) and the app pulls `HS1` (Up = 2), the controller reads 3, which is **Preset 1**, a movement nobody requested.
-
-Therefore in Case A2/C the module uses a **selector**, not a parallel injector:
+**Parallel pull-downs are not safe here.** Keypad Down (1) plus Airo Up (2) reads as 3, **Preset 1**, a move nobody asked for. So a selector is used:
 
 ```
-                    ┌──────── K1 (4-pole relay or 4× NC photoMOS) ────────┐
- keypad HS0..HS3 ───┤ NC  (de-energised: keypad → controller)              │
-                    │ COM ──────────────────────────────────────────────── ├──► controller HS0..HS3
- injectors HS0..3 ──┤ NO  (energised: ESP32 injectors → controller)        │
-                    └──────────────────────────────────────────────────────┘
- keypad HS0..HS3 ── 10 kΩ ── sense (opto or 5 V-tolerant buffer) ──► ESP32   (always watched, both positions)
+                     ┌──── K1: 4-pole signal relay, or NC + NO photoMOS pairs ────┐
+ Port A HS0..HS3 ────┤ NC  (de-energised: keypad → controller)                     │
+                     │ COM ─────────────────────────────────────────────────────── ├──► Port B HS0..HS3
+ Injectors HS0..3 ───┤ NO  (energised: Airo → controller)                          │
+                     └─────────────────────────────────────────────────────────────┘
+ Port A HS0..HS3 ── 10 kΩ ── sense ──► Core       (watched in both positions)
 ```
 
-- K1 energises only for the duration of an app command, then drops back. While K1 is energised, the keypad lines are still sensed. Any manual press makes the ESP32 drop K1 and the keypad takes over (section 6.2).
-- While K1 is energised, the controller-side lines need their pull-ups. They are provided by the controller itself **[ASSUMPTION]**; confirm in discovery that the lines idle high with the keypad disconnected.
-- Candidate parts: a 4PDT signal relay (for example Omron G6K/G5V class, or two DPDT), or normally-closed photoMOS (for example CPC1117N / AQY414 class) paired with normally-open photoMOS on the injector side. Analog switch ICs (74HC4066, CD4053) are **not** used as the fail-safe element because their unpowered state is not guaranteed to connect the keypad.
-- If the encoding needs more than four lines, K1 scales accordingly.
+K1 energises only during an app command, and only after the keypad has been idle (section 7.2). Any keypad activity drops K1. Controller-side pull-ups must keep lines high with the keypad disconnected; confirm in discovery.
 
-#### 5.2.4 Case A3, resistor ladder
+### 6.4 Case A3: resistor ladder
 
-One sense line, with each button selecting a different resistance to GND. The module reproduces each button's resistance with a photoMOS switching a fixed resistor (measured in discovery, 1 % parts) onto the line, behind a selector as in 5.2.3. A digital potentiometer is not used because its unpowered state is undefined.
+One line, each button selects a different resistance. Reproduce each with a photoMOS switching a 1 % resistor (values measured in discovery) behind a selector as in 6.3. No digital potentiometer (undefined unpowered state).
 
-### 5.3 Case B: keypad speaks a digital protocol
+### 6.5 Case B: digital protocol
 
-#### 5.3.1 Bus picture
-
-Community reports for framed Jiecang handset ports: 9600 baud 8N1, lines pulled up to 5 V by the controller and pulled low to signal, `DTX` (controller → keypad) and `HTX` (keypad → controller) **[COMMUNITY]**.
-
-- `DTX` has one driver (the controller). The ESP32 may **listen** to it through a level-shifting receiver with no risk of contention.
-- `HTX` has one driver (the keypad). If the ESP32 also transmits on `HTX`, there are two drivers on one line, which is forbidden by R4. Even if both are open-drain, overlapping frames corrupt each other and a corrupted frame could be misread as a different command.
-
-#### 5.3.2 Chosen design: man-in-the-middle on HTX with a fail-safe bypass relay
+`DTX` (controller → keypad) has one driver; Airo only listens. `HTX` (keypad → controller) has one driver, the keypad; Airo transmitting on it too would violate R4. Design: man-in-the-middle on `HTX` with a bypass relay.
 
 ```
- keypad HTX ──┬──────────────── K2 NC ─────────────────┐
-              │                                        ├──► controller HTX
-              └─► RX buffer ──► ESP32 UART2 RX          │
-                  ESP32 UART2 TX ──► open-drain buffer ─┴ K2 NO
-                                     (74LVC1G07 or BSS138, pull-up from controller side)
-
- controller DTX ──────────────────────────────────────────────────► keypad DTX   (never broken)
-              └─► RX buffer ──► ESP32 UART1 RX                                   (listen only)
-
- RX buffer: 10 kΩ / 20 kΩ divider into a Schmitt input, or 74LVC1G17 powered at 3.3 V with 5 V-tolerant input.
+ Port A HTX ──┬──────────────── K2 NC ──────────────────┐
+              │                                         ├──► Port B HTX
+              └─► RX buffer ──► Core UART RX             │
+                  Core UART TX ──► open-drain buffer ────┴ K2 NO   (74LVC1G07 or BSS138)
+ Port B DTX ─────────────────────────────────────────────────────► Port A DTX   (never broken)
+            └─► RX buffer ──► Core UART RX2 (listen only, height reports)
+ RX buffer: 10 k / 20 k divider into 74LVC1G17 at 3.3 V
 ```
 
-- **K2 de-energised (default, power loss, watchdog trip, MANUAL ONLY):** keypad `HTX` connects straight to controller `HTX`. Factory behaviour.
-- **K2 energised (app mode):** the keypad's `HTX` goes only to the ESP32. The ESP32 forwards every keypad frame unchanged to the controller within one frame time, and inserts app frames only in gaps when no keypad frame is in progress. The ESP32 is the single driver of controller `HTX`.
-- **Manual priority:** any keypad frame that is a movement or stop command causes the ESP32 to abandon its current app command, forward the keypad frame, and drop K2 after the line has been idle for 50 ms.
-- **Forwarding is byte-transparent.** The ESP32 never rewrites keypad frames. Unknown frames are forwarded as-is.
-- **Frame integrity:** the ESP32 transmits only frames whose checksum it has computed and which match a command recorded from the real keypad in discovery (section 9.3).
+- K2 de-energised (default, power loss, watchdog, MANUAL ONLY): factory path.
+- K2 energised: Airo forwards every keypad frame byte-for-byte within one frame time and inserts its own frames only in gaps. Airo is the single driver of controller `HTX`.
+- A keypad movement or stop frame makes Airo abandon its command, forward the frame, and drop K2 after 50 ms of idle.
+- Airo only transmits frames recorded from the real keypad during discovery (section 13).
 
-#### 5.3.3 Alternative considered: shared open-drain HTX with collision avoidance
+Rejected alternative: shared open-drain `HTX` with collision avoidance. It cannot guarantee the keypad never starts a frame mid-way through Airo's, and violates G5.
 
-Rejected for v1. It relies on the keypad never starting a frame while the ESP32 is mid-frame, which the ESP32 cannot guarantee, and violates G5.
+### 6.6 Case B0: spare controller port
 
-### 5.4 Case B0: a spare controller port
+Some Jiecang controllers have a second port for a Bluetooth/app dongle (reported RJ12: GND, DTX, VCC 5 V, HTX) **[COMMUNITY]**. If present and it accepts frames, Airo uses it: the keypad path is untouched, no K2 needed. Preferred if bench tests show sane behaviour when keypad and port conflict.
 
-Some Jiecang controllers expose a second port intended for a Bluetooth/app dongle (reported as RJ12 on some models: pins GND, DTX, VCC 5 V, HTX, with the outer pins unused) **[COMMUNITY]**. If this desk has one and it accepts framed commands:
+### 6.7 Interface Board block list
 
-- The keypad path is not touched at all. Contention only exists between the controller's two ports, which the controller itself arbitrates.
-- The module connects with an RJ12 lead, through the receiver/open-drain transmitter of 5.3.2, with no K2 relay needed.
-- This becomes the **preferred** option if discovery confirms it works. It must still be bench-tested for what happens when keypad and port send conflicting commands.
-
-### 5.5 Module block list (all cases)
-
-| Block | Prototype part (example) | Needed in |
+| Block | Example part | Needed in |
 |---|---|---|
-| MCU | ESP32-WROOM-32 dev board | All |
-| Power | USB 5 V adapter, 1 A or more | All |
-| Pass-through breakout | RJ45 or RJ12 coupler with screw-terminal breakout (type from discovery step 1) | All except B0 |
-| Injector, per line | AQY212 / TLP222A photoMOS (NO) + 330 Ω | A1, A2, A3, C |
-| Sense, per line | PC817 + 22 kΩ, or 74LVC1G17 behind a divider | All |
-| Selector | 4-pole signal relay with NC keypad path + ULN2003 or MOSFET coil driver + flyback diode | A2, A3, C (K1); B (K2, 1 pole) |
-| UART receive | 10 k / 20 k divider + 74LVC1G17 | B, B0, C (height) |
-| UART transmit | 74LVC1G07 open-drain or BSS138 | B, B0 |
-| Watchdog | 74HC123 retriggerable monostable gating relay coil and injector enables | All |
-| Bypass switch | SPST panel toggle `MANUAL ONLY` | All |
-| Status LED | RGB LED: green = keypad only, blue = app path armed, red = fault | All |
-| Bench tools | Multimeter, 8-channel logic analyzer, 10 kΩ probe resistors | Discovery |
-
-No motor, gearbox or motor driver is required in any case.
+| Ports A/B | Native desk connector jacks/plugs (⚠ C2) | All except B0 |
+| Port C | Keyed 10-pin JST-PH/XH or Micro-Fit | All |
+| I/O expander | MCP23017 | A1, A2, A3, C |
+| Injector per line | AQY212 / TLP222A photoMOS + 330 Ω | A1, A2, A3, C |
+| Sense per line | PC817 + 22 kΩ, or divider + 74LVC1G17 | All |
+| Selector | 4-pole signal relay (NC = keypad path) + MOSFET driver + flyback diode, or NC/NO photoMOS pairs | A2, A3, C (K1); B (K2) |
+| UART RX / TX | Divider + 74LVC1G17; 74LVC1G07 open-drain | B, B0, C |
+| Watchdog | 74HC123 gating selector and injector enables | All |
+| MANUAL ONLY | SPST panel toggle | All |
+| Status LED | Green keypad-only, blue Airo path armed, red fault | All |
 
 ---
 
-## 6. Fail-safe behaviour
+## 7. Fail-safe behaviour and arbitration
 
-### 6.1 Fault table
+### 7.1 Fault table
 
-| Condition | Hardware response | Firmware response | Desk result |
+| Condition | Hardware | Firmware | Desk result |
 |---|---|---|---|
-| Module unplugged | n/a | n/a | Keypad plugged back into controller. Factory behaviour. |
-| ESP32 unpowered / USB removed | All relays and injectors de-energise (R5) | n/a | Keypad path only. |
-| `MANUAL ONLY` switch on | Enables cut in hardware (R6) | Reports `bypass: true`, rejects commands with `409 bypass_active` | Keypad path only. |
-| ESP32 crash or hang | Watchdog drops enables within ~200 ms (R7) | n/a | Any app movement stops; keypad path only. |
-| Wi-Fi drop or app closed during hold-to-move | none | Hold lease expires (6.3), injectors released | Movement stops within the lease time. |
-| Physical button pressed during app command | none | Release all injectors / drop selector within 20 ms; enter `MANUAL_ACTIVE` | Keypad wins. |
-| App command exceeds max duration | none | Release after `max_hold_ms` (default 30 s) | Movement stops. |
-| Controller reports error or limit (Case B/C) | none | Release, surface `desk_error` event | Controller's own protection remains in charge. |
-| Brown-out / reboot | Relays de-energised during boot | On boot: never drive any line until 2 s of idle keypad sense and a successful self-test | No movement on power-up. |
+| Airo unplugged | n/a | n/a | Keypad back in controller; factory behaviour |
+| Core unpowered | Selectors de-energise (R5) | n/a | Keypad path |
+| MANUAL ONLY on | Enables cut (R6) | Rejects commands `409 bypass_active` | Keypad path |
+| Core crash/hang | Watchdog drops enables ≤ 200 ms (R7) | n/a | App movement stops; keypad path |
+| Wi-Fi drop / app closed while holding | none | Lease expires, release | Movement stops |
+| Reconnect after drop | none | **No automatic restart**; client must issue a new command | Desk stays stopped |
+| Physical key during app command | none | Release ≤ 20 ms, enter `MANUAL_ACTIVE` | Keypad wins |
+| Repeated/duplicate command | none | Deduplicated by `request_id`; repeated `desk.up` renews, never stacks | No uncontrolled movement |
+| Command exceeds `max_hold_ms` | none | Release | Movement stops |
+| Controller limit or error (B/C) | none | Release; `desk_error` event; block the same direction until a reversal or 2 s | Controller protection stays in charge |
+| Brown-out / reboot | Selectors de-energised during boot | No driving until 2 s keypad idle and self-test pass | No movement on power-up |
 
-### 6.2 Arbitration and priority
+### 7.2 Priority and rules
 
 Priority, highest first:
 
-1. Hardware bypass and watchdog (outside firmware).
-2. Physical keypad activity.
-3. Firmware safety timers (lease expiry, max duration).
-4. App `stop`.
-5. App movement commands.
+1. Hardware bypass and watchdog.
+2. Physical keypad.
+3. `desk.stop` (from any authenticated client or integration).
+4. Firmware timers (lease expiry, max duration).
+5. Movement commands.
 
-Rules:
+Rules (merging the user's command-service rules with v0.1):
 
-- The module never begins an app command while any keypad line (or keypad frame) shows activity, or within 300 ms after it ends.
-- Only one app command is active at a time. A new command first releases the previous one, waits 50 ms, then applies the new one.
-- `up` and `down` are never driven at the same time.
-- After a manual press, app commands are rejected with `409 manual_active` until the keypad has been idle for 1 s.
+- Only one movement direction at a time; `desk.up` and `desk.down` are never asserted together.
+- STOP always accepted and always wins over movement.
+- Movement commands expire (lease).
+- No automatic movement restart after reconnecting.
+- No app command starts while the keypad is active or within 300 ms after it ends; after a manual press, commands are rejected for 1 s.
+- One owner per active command; others get `busy`, but anyone may stop.
+- A new movement first releases the previous one, waits 50 ms, then applies.
+- Presets: see C4 and Q14.
+- Local authentication for every command.
 
-### 6.3 Movement semantics
+### 7.3 Movement semantics
 
-**Hold-to-move (`up`, `down`):** the app holds a **lease**. It sends `hold` with a `lease_ms` (default 400 ms, maximum 1000 ms) and must renew it every ≤ 150 ms while the user's finger is down. On release, the app sends `release`. If no renewal arrives, the lease expires and the module releases the line. This makes "Wi-Fi dropped while moving" self-stopping.
+**Hold-to-move (`desk.up`, `desk.down`):** the client holds a lease (`lease_ms` default 400, max 1000) and renews every ≤ 150 ms. Missing renewals release the line.
 
-**Presets (`sit`, `stand`):** behaviour depends on the controller **[UNKNOWN]**:
+**Presets (`desk.sitting`, `desk.standing`):** if the controller is one-touch **[UNKNOWN]**, Airo sends a tap (`tap_ms` 150 or one frame); if hold-to-run, presets use leases.
 
-- If the controller is *one-touch*, the module sends a tap (line low for `tap_ms`, default 150 ms, or one frame) and the controller completes the move on its own.
-- If the controller is *hold-to-run*, presets use the same lease mechanism as `up`/`down`.
+**Stop:**
 
-**Stop:** the app's `stop` always releases every injector immediately. If a one-touch preset is in progress, the controller must also be told to stop. The method depends on discovery:
-
-| Case | Stop method | Status |
+| Case | Method | Status |
 |---|---|---|
-| A / C | Tap the direction button opposite to travel for `tap_ms` (many controllers stop a preset on any key press) | **[ASSUMPTION]**; verify which key stops a preset without starting a new movement |
-| B / B0 | Send the controller's stop frame (reported as command `0x2B` on some Jiecang controllers) | **[COMMUNITY]**; verify |
+| A / C | Release everything, then tap the direction opposite to travel | **[ASSUMPTION]**; must verify it stops without starting a new move |
+| B / B0 | Send the controller's stop frame (reported `0x2B`) | **[COMMUNITY]**; verify |
 
-Until the stop method is verified on this desk, the app shows a warning that **STOP only releases app control** and the physical keypad must be used to interrupt a preset.
+Until verified, the app warns that STOP releases app control only, and the physical keypad must be used to interrupt a one-touch preset.
 
 ---
 
-## 7. Firmware architecture (ESP32)
+## 8. Firmware architecture
 
-Target: ESP-IDF or Arduino-ESP32. The structure is identical either way.
+PlatformIO with ESP-IDF (or Arduino-ESP32) for the board, plus a PlatformIO `native` environment for the laptop.
 
 ```
-┌────────────────────────────── Airo firmware ───────────────────────────────┐
-│ Api (HTTP + WebSocket, mDNS)                                                │
-│        │ commands                         ▲ state/events                    │
-│        ▼                                  │                                 │
-│ CommandArbiter  ── state machine (7.2), leases, priority (6.2)              │
-│        │                                  ▲                                 │
-│        ▼                                  │                                 │
-│ KeypadDriver (interface)          KeypadSense (interface)    HeightSource   │
-│   ├─ SwitchDriver   (A1)            ├─ LineSense               ├─ None      │
-│   ├─ EncodedDriver  (A2/C)          └─ FrameSense              └─ FrameHeight│
-│   ├─ LadderDriver   (A3)                                                    │
-│   └─ FrameDriver    (B/B0)                                                  │
-│ Safety: heartbeat pin, boot self-test, bypass input                         │
-│ Config: Wi-Fi creds, API token, interface case, timings (NVS)               │
-└─────────────────────────────────────────────────────────────────────────────┘
+┌───────────────────────── airo-core (portable C++, no ESP-IDF includes) ─────────────────────────┐
+│ CommandService: schema validation, request_id dedupe, leases, arbitration (7.2), state machine  │
+│ StatusModel: state, height (if any), faults                                                      │
+│ uses ► HardwareAdapter (interface)                Clock (interface)                               │
+└───────────────┬───────────────────────────────────────────────┬──────────────────────────────────┘
+                │                                               │
+   ┌────────────┴─────────────┐                    ┌────────────┴──────────────────────────────┐
+   │ Esp32HardwareAdapter     │                    │ VirtualHardwareAdapter                     │
+   │ (on the ESP32-S3)        │                    │ (on the laptop, native build)              │
+   │  ├─ SwitchDriver   (A1)  │                    │  ├─ Virtual keypad (5 buttons)            │
+   │  ├─ EncodedDriver  (A2/C)│                    │  ├─ Virtual selector (bypass / Airo path) │
+   │  ├─ LadderDriver   (A3)  │                    │  ├─ Virtual interface case (A1…B0)        │
+   │  └─ FrameDriver    (B/B0)│                    │  └─ Bridge to the 3D simulator (WS)       │
+   └──────────────────────────┘                    └───────────────────────────────────────────┘
+ Transport layer (shared): REST + WebSocket server, mDNS (board) / localhost (laptop), optional MQTT
+ Board-only: BLE provisioning, NVS config, hardware watchdog heartbeat, USB-CDC logging
 ```
 
-The interface case is a build-time or config choice recorded in NVS. The API and arbiter do not change between cases.
-
-### 7.1 Driver interface
+### 8.1 HardwareAdapter interface
 
 ```cpp
-enum class Action { Up, Down, PresetSit, PresetStand, Reset, Stop };
+enum class Action { Up, Down, Sitting, Standing, Reset };
 
-struct KeypadDriver {
-  virtual bool begin() = 0;                 // self-test; false = refuse to arm
-  virtual void press(Action a) = 0;         // start asserting the action
-  virtual void release() = 0;               // release everything, idempotent
+struct HardwareAdapter {
+  virtual bool selfTest() = 0;                  // false = refuse to arm, enter FAULT
+  virtual void arm(bool on) = 0;                // selector to Airo path (no-op in A1)
+  virtual void press(Action a) = 0;             // start asserting
   virtual void tap(Action a, uint16_t ms) = 0;
-};
-
-struct KeypadSense {
-  virtual bool manualActive() = 0;          // any physical key / keypad frame right now
-  virtual uint32_t lastManualMs() = 0;
-};
-
-struct HeightSource {
-  virtual bool available() = 0;
+  virtual void releaseAll() = 0;                // idempotent, must complete within 20 ms
+  virtual bool manualActive() = 0;              // keypad activity right now
+  virtual bool bypassActive() = 0;              // MANUAL ONLY switch / selector state
   virtual std::optional<uint16_t> heightMm() = 0;
-  virtual uint32_t ageMs() = 0;
+  virtual std::optional<DeskEvent> pollEvent() = 0;  // limit hit, controller error, manual press
 };
 ```
 
-### 7.2 State machine
+`airo-core` is the single implementation of command logic. It never calls a GPIO directly.
+
+### 8.2 State machine
 
 ```
-            boot ─► SELF_TEST ──fail──► FAULT
-                       │ ok
-                       ▼
- ┌──────────────────► IDLE ◄──────────────────────────────┐
- │                     │ app command & keypad idle ≥300 ms │
- │                     ▼                                    │
- │                 APP_ACTIVE ── lease expiry / release / stop / max duration ──┘
- │                     │ keypad activity
- │                     ▼
- └── keypad idle 1 s ─ MANUAL_ACTIVE
- BYPASS: entered from any state while MANUAL ONLY switch is on; exits to IDLE when switched off.
- FAULT: requires power cycle or authenticated `POST /api/v1/selftest`.
+ boot ─► SELF_TEST ─fail─► FAULT (power cycle or authenticated selftest)
+             │ ok
+             ▼
+ ┌───────► IDLE ◄───────────────────────────────────────────────┐
+ │           │ command accepted, keypad idle ≥ 300 ms             │
+ │           ▼                                                    │
+ │       APP_ACTIVE ── lease expiry / stop / max duration / limit ┘
+ │           │ keypad activity
+ │           ▼
+ └ idle 1 s ─ MANUAL_ACTIVE
+ BYPASS: from any state while MANUAL ONLY is on; back to IDLE when off.
 ```
 
-### 7.3 Timing constants (defaults, all configurable)
+### 8.3 Timing constants
 
 | Name | Default | Purpose |
 |---|---|---|
-| `manual_release_ms` | 20 | Max time to release after seeing a manual press |
-| `manual_quiet_ms` | 1000 | Keypad idle time before app commands are accepted again |
-| `pre_command_quiet_ms` | 300 | Keypad idle required before starting an app command |
+| `manual_release_ms` | 20 | Max time to release after a manual press |
+| `manual_quiet_ms` | 1000 | Keypad idle before commands accepted again |
+| `pre_command_quiet_ms` | 300 | Keypad idle required before starting |
 | `lease_default_ms` / `lease_max_ms` | 400 / 1000 | Hold-to-move lease |
 | `tap_ms` | 150 | Simulated short press |
-| `max_hold_ms` | 30000 | Absolute cap on any app movement |
-| `watchdog_period_ms` | 50 | Heartbeat toggle period (hardware times out at ~200 ms) |
+| `max_hold_ms` | 30000 | Cap on any movement |
+| `watchdog_period_ms` | 50 | Heartbeat toggle (hardware timeout ~200 ms) |
+| `request_id_window` | 64 ids / 60 s | Duplicate suppression |
 
 ---
 
-## 8. Local API
+## 9. Setup, discovery and security
 
-### 8.1 Discovery and transport
+### 9.1 BLE provisioning
 
-- mDNS hostname `airo-desk.local`, service `_airo-desk._tcp`, TXT records `api=1`, `fw=<version>`, `id=<short-id>`.
-- HTTP/1.1 on port 80, JSON bodies, base path `/api/v1`.
-- WebSocket at `/api/v1/ws` for hold-to-move and live state.
-- LAN only. The firmware has no cloud client and makes no outbound connections except NTP (optional).
+1. Unprovisioned (or after a 10 s press of the Core's setup button), the Core advertises `Airo-Desk-XXXX` over BLE.
+2. The app connects using ESP-IDF unified provisioning over BLE with Security 2 (SRP6a + AES-GCM) and a proof-of-possession code printed on a device label / shown on first USB-C log line.
+3. The app sends Wi-Fi credentials; the Core joins Wi-Fi and returns its IP.
+4. During the same session the Core generates a random 128-bit API token and returns it over the encrypted BLE channel. The app stores it.
+5. BLE stops advertising after provisioning (saves power, reduces attack surface). BLE is setup-only in v1; it is not a control channel.
 
-### 8.2 Provisioning and pairing
+### 9.2 mDNS
 
-1. First boot (or after a 10 s press of the module's own setup button): the ESP32 starts a SoftAP `Airo-Desk-XXXX` with a captive page to enter home Wi-Fi credentials.
-2. During the same session the module generates a random 128-bit API token and shows it once on the setup page (and as a QR code). The app stores it.
-3. Every API request except `GET /api/v1/info` must carry `Authorization: Bearer <token>`. WebSocket clients send the token in the first message.
-4. Token reset requires the physical setup button. There is no remote reset.
+Hostname `airo-desk-XXXX.local`, service `_airo-desk._tcp` on port 80, TXT `api=1`, `fw=<ver>`, `id=<device_id>`.
 
-Plain HTTP on a trusted LAN is accepted for v1 **[ASSUMPTION]**. TLS with a self-signed certificate pinned by the app is a v2 option (open question Q10).
+### 9.3 Authentication
 
-### 8.3 REST endpoints
+Every request except `GET /api/v1/info` carries `Authorization: Bearer <token>`; WebSocket clients authenticate in the first message. Token reset requires the physical setup button. Plain HTTP on the LAN is accepted for v1 **[ASSUMPTION]**; TLS is Q10.
+
+---
+
+## 10. Unified command schema and local API
+
+Every control path (app REST, app WebSocket, Home Assistant, MQTT, future Alexa) produces the **same command envelope** and goes through the same `CommandService`.
+
+### 10.1 Command envelope
+
+```json
+{
+  "device_id": "airo-desk-001",
+  "command": "desk.up",
+  "source": "mobile_app",
+  "request_id": "6f1c2a9e-…",
+  "lease_ms": 400
+}
+```
+
+| Field | Required | Notes |
+|---|---|---|
+| `device_id` | yes | Must match the device; protects against cross-device mistakes |
+| `command` | yes | One of 10.2 |
+| `source` | yes | `mobile_app`, `web_dashboard`, `home_assistant`, `alexa`, `mqtt`, `simulator`, `test` |
+| `request_id` | yes | Unique per command; duplicates are acknowledged but not re-executed |
+| `lease_ms` | for `desk.up`/`desk.down` | Default 400, max 1000 |
+
+The user's earlier example form `{"command":"move","direction":"up"}` maps to `desk.up`; v1 accepts only the dotted names to keep one spelling.
+
+### 10.2 Commands
+
+| Command | Effect | Notes |
+|---|---|---|
+| `desk.up` | Hold-to-move up | Lease; renew with `desk.renew` |
+| `desk.down` | Hold-to-move down | Lease |
+| `desk.stop` | Release all, then stop method (7.3) | Always accepted from any authenticated source |
+| `desk.sitting` | Controller sitting preset | C4 / Q14 |
+| `desk.standing` | Controller standing preset | C4 / Q14 |
+| `desk.get_status` | Returns status (10.5) | Read-only |
+| `desk.renew` | Extend the active lease | Owner only |
+| `desk.release` | End hold-to-move | Owner only |
+
+### 10.3 Transport
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
-| GET | `/info` | none | Device id, firmware version, API version, interface case, capabilities |
-| GET | `/state` | token | Current state (8.5) |
-| POST | `/command` | token | One-shot commands: `tap`, `stop`, presets |
-| POST | `/selftest` | token | Re-run self-test, clear `FAULT` |
-| GET | `/config` | token | Timings and settings |
-| PATCH | `/config` | token | Change timings within safe bounds; rejected while not `IDLE` |
+| GET | `/api/v1/info` | none | Device id, firmware, API version, interface case, capabilities |
+| POST | `/api/v1/commands` | token | Submit an envelope; `202` with status, or an error |
+| GET | `/api/v1/status` | token | Same as `desk.get_status` |
+| POST | `/api/v1/selftest` | token | Re-run self-test, clear `FAULT` |
+| GET/PATCH | `/api/v1/config` | token | Timings within safe bounds; PATCH only when `IDLE` |
+| WS | `/api/v1/ws` | token in first message | Envelopes in, status/events out; preferred for hold-to-move |
 
 `GET /api/v1/info`:
 
 ```json
 {
-  "device": "airo-desk",
-  "id": "a1b2c3",
-  "fw": "0.1.0",
+  "device_id": "airo-desk-001",
+  "fw": "0.2.0",
   "api": 1,
+  "hardware": "esp32-s3",
+  "adapter": "esp32",
   "interface_case": "A1",
   "capabilities": {
-    "actions": ["up", "down", "preset_sit", "preset_stand", "stop"],
-    "reset_exposed": false,
+    "commands": ["desk.up", "desk.down", "desk.stop", "desk.sitting", "desk.standing", "desk.get_status"],
     "height_feedback": false,
     "stop_method_verified": false,
-    "preset_mode": "unknown"
+    "preset_mode": "unknown",
+    "reset_exposed": false
   }
 }
 ```
 
-`POST /api/v1/command`:
+### 10.4 WebSocket events (module → client)
 
 ```json
-{ "action": "preset", "preset": "stand", "client_id": "phone-1", "seq": 17 }
+{ "type": "status", "state": "APP_ACTIVE", "command": "desk.up", "owner": "mobile_app", "lease_remaining_ms": 310, "height_mm": null, "bypass": false }
+{ "type": "ack",    "request_id": "6f1c…", "result": "accepted" }
+{ "type": "event",  "event": "manual_override" }
+{ "type": "event",  "event": "lease_expired" }
+{ "type": "event",  "event": "limit_reached", "direction": "up" }
+{ "type": "error",  "request_id": "6f1c…", "code": "manual_active" }
 ```
 
-```json
-{ "action": "stop", "client_id": "phone-1", "seq": 18 }
-```
+Status broadcast on every change and at 2 Hz while `APP_ACTIVE`. A closed owner socket releases its lease immediately.
 
-Responses: `202 Accepted` with the new state, or an error from 8.7.
-
-### 8.4 WebSocket protocol
-
-Client → module:
-
-```json
-{ "type": "auth",    "token": "…" }
-{ "type": "hold",    "action": "up", "lease_ms": 400, "seq": 101 }
-{ "type": "renew",   "seq": 102 }
-{ "type": "release", "seq": 103 }
-{ "type": "stop",    "seq": 104 }
-```
-
-Module → client:
-
-```json
-{ "type": "state", "state": "APP_ACTIVE", "action": "up", "owner": "phone-1", "lease_remaining_ms": 310, "height_mm": null, "bypass": false }
-{ "type": "event", "event": "manual_override", "at_ms": 123456 }
-{ "type": "event", "event": "lease_expired" }
-{ "type": "error", "code": "manual_active", "seq": 101 }
-```
-
-Rules:
-
-- Only one client may own an active command. A second client's `hold` is rejected with `busy`, but **any** authenticated client's `stop` is always accepted.
-- `renew` is ignored unless it comes from the owner. If the owner's socket closes, its lease is released immediately.
-- `seq` values are echoed in replies so the app can match acknowledgements.
-- The module broadcasts `state` on every change and at 2 Hz while `APP_ACTIVE`.
-
-### 8.5 State object
+### 10.5 Status object (`desk.get_status`)
 
 | Field | Type | Meaning |
 |---|---|---|
-| `state` | `IDLE` \| `APP_ACTIVE` \| `MANUAL_ACTIVE` \| `BYPASS` \| `FAULT` | Section 7.2 |
-| `action` | string \| null | Action being asserted by the app |
-| `owner` | string \| null | `client_id` of the owning client |
-| `height_mm` | int \| null | Only when `capabilities.height_feedback` is true |
-| `height_age_ms` | int \| null | Age of the last height report |
-| `bypass` | bool | `MANUAL ONLY` switch position |
-| `last_manual_ms` | int | Milliseconds since last physical key |
-| `fault` | string \| null | Fault reason |
+| `state` | `IDLE` \| `APP_ACTIVE` \| `MANUAL_ACTIVE` \| `BYPASS` \| `FAULT` | 8.2 |
+| `command` | string \| null | Active command |
+| `owner` | string \| null | `source` of the owner |
+| `height_mm` | int \| null | Only if `height_feedback` |
+| `height_age_ms` | int \| null | |
+| `bypass` | bool | MANUAL ONLY / selector state |
+| `last_manual_ms` | int | Since last physical key |
+| `fault` | string \| null | |
 
-The app shows `-- cm` and "Height feedback not yet confirmed" whenever `height_mm` is null, matching the current concept screen.
+The app shows `-- cm` / "Height feedback not yet confirmed" whenever `height_mm` is null.
 
-### 8.6 Reset / recalibration
-
-`reset` is not in `capabilities.actions` and the endpoint rejects it with `403 action_not_enabled` until discovery records exactly what the circular-arrow button does (short and long press) and the user enables it in config. On many desks, reset drives the desk to its lowest position, so when enabled it will require a confirmation step in the app and will use hold-to-run, never a tap.
-
-### 8.7 Errors
+### 10.6 Errors
 
 | HTTP | Code | Meaning |
 |---|---|---|
-| 400 | `bad_request` | Malformed body or unknown action |
+| 400 | `bad_request` | Malformed envelope or unknown command |
 | 401 | `unauthorized` | Missing or wrong token |
-| 403 | `action_not_enabled` | Action exists but is disabled (for example `reset`) |
-| 409 | `manual_active` | Physical keypad in use or within quiet time |
-| 409 | `bypass_active` | `MANUAL ONLY` switch on |
-| 409 | `busy` | Another client owns the active command |
-| 423 | `fault` | Module in `FAULT`; run self-test |
-| 429 | `rate_limited` | More than 20 commands/s from one client |
+| 403 | `command_not_enabled` | For example `desk.reset`, or presets under strict C4 |
+| 404 | `wrong_device` | `device_id` mismatch |
+| 409 | `manual_active` | Keypad in use or within quiet time |
+| 409 | `bypass_active` | MANUAL ONLY on |
+| 409 | `busy` | Another source owns the active command |
+| 409 | `direction_blocked` | Limit reached in that direction |
+| 423 | `fault` | Run self-test |
+| 429 | `rate_limited` | More than 20 commands/s from one source |
 
-### 8.8 Relation to the simulator
+### 10.7 Reset
 
-The Phase 5 "ESP32 firmware sim" in the PRD (`docs/PRD.md`, added with the Phase 1 work) should implement this same API against the simulated controller, so the Airo app can be developed against the simulator first and pointed at real hardware later with no changes.
+`desk.reset` is reserved and returns `403 command_not_enabled` until discovery records what the circular-arrow button does. When enabled it requires an app confirmation step and uses hold-to-run, never a tap.
 
 ---
 
-## 9. Digital protocol reference (Case B / B0 / C)
+## 11. Integrations
 
-> **Everything in this section is [COMMUNITY] and unverified on this desk.** It summarises public reverse-engineering of other Jiecang-based desks. Different Jiecang controller models, and even different ports on the same controller, use different protocols. Treat it as a hypothesis to test against the captures from section 4, never as a command list to send blind.
+### 11.1 Optional MQTT bridge
 
-### 9.1 Physical layer (reported)
+For Home Assistant and debugging with MQTT Explorer. Off by default. Topics carry the same envelope:
+
+| Topic | Direction | Payload |
+|---|---|---|
+| `airo/<device_id>/cmd` | in | Command envelope (10.1), `source: "mqtt"` |
+| `airo/<device_id>/status` | out, retained | Status object (10.5) |
+| `airo/<device_id>/event` | out | Events (10.4) |
+
+Broker on the LAN, username/password required. Hold-to-move over MQTT is discouraged; integrations should use presets and stop.
+
+### 11.2 Alexa (later, phase 6)
+
+```
+"Alexa, set desk to standing" ─► Amazon Alexa ─► Home Assistant (Alexa integration) ─► Airo local API ─► Airo Core ─► Interface Board ─► desk controller
+```
+
+- The Core has no Amazon code and no cloud dependency. Home Assistant is the integration layer.
+- Depending on the Alexa route (Home Assistant Cloud or a self-hosted skill), internet access and remote reachability of Home Assistant are needed. **Fully offline Alexa voice control is not promised.**
+- Voice exposes only `desk.sitting`, `desk.standing` and `desk.stop`. No hold-to-move by voice, because a voice lease cannot be renewed safely.
+- No interface or motor-side hardware changes are needed (G9).
+
+Matter is a later decision. The ESP32-S3 can run Matter (ESP-Matter SDK), but nothing in v1 depends on it.
+
+---
+
+## 12. Laptop end-to-end simulation
+
+Goal (G8): test the whole system on a laptop before the desk is touched, **using the same firmware core** that ships on the board (⚠ C8).
+
+```
+ Flutter app / Web dashboard      UP · DOWN · Sitting · Standing · STOP
+        │ REST / WebSocket (/api/v1) [/ MQTT]
+        ▼
+ airo-core (native build)         same CommandService as the ESP32-S3
+        │ HardwareAdapter
+        ▼
+ VirtualHardwareAdapter           virtual keypad · virtual selector (bypass/Airo path) · chosen interface case
+        │ WebSocket bridge
+        ▼
+ Virtual desk controller          existing TS controller/motor/mechanical engines: movement · limits · faults
+        ▼
+ 3D desk simulation               existing React Three Fiber visualisation
+```
+
+| Layer | Implementation |
+|---|---|
+| Firmware core | `firmware/airo-core/` C++, built twice: PlatformIO `esp32-s3` env and `native` env |
+| Laptop host | `native` build exposes `/api/v1` on `localhost:8080` |
+| Virtual hardware | `VirtualHardwareAdapter` speaks a small JSON bridge protocol to the browser simulator (`keypad.press`, `line.state`, `controller.height`, `controller.limit`, `power.cut`) |
+| Desk model | Existing simulator packages model the **desk's** controller and mechanics, not Airo's logic |
+| Board-level sim | Wokwi runs the real ESP32-S3 binary with a virtual logic analyzer, for GPIO timing and watchdog tests; it does not model the Green Soul controller's electrical behaviour |
+| Unit tests | PlatformIO `pio test -e native` on `airo-core` |
+
+### 12.1 Simulation test matrix
+
+| Test | Expected result |
+|---|---|
+| Physical UP button | Desk moves up |
+| App `desk.up` | Desk moves up while the lease is renewed |
+| Physical DOWN button | Desk moves down |
+| App `desk.down` | Desk moves down |
+| `desk.sitting` | Moves to the controller's sitting preset (C4) |
+| `desk.standing` | Moves to the standing preset (C4) |
+| Physical and app together | App releases within 20 ms; keypad action wins; no unrequested movement (encoded-line case: no phantom preset) |
+| Airo power loss | Selector returns to keypad path; keypad works |
+| Network disconnect during hold | Lease expires; movement stops |
+| Reconnect after drop | No automatic restart |
+| Repeated `desk.up` with same `request_id` | Executed once; no stacked movement |
+| `desk.stop` | Movement stops; accepted from a non-owner source |
+| Upper/lower limit | Further movement in that direction blocked (`direction_blocked`) |
+| Watchdog | Core hang releases within 200 ms (Wokwi) |
+| MANUAL ONLY | All commands rejected; keypad works |
+
+Passing these proves the **logic**, not the electrical safety of the real circuit. That still needs bench stages T1–T7 (section 14).
+
+---
+
+## 13. Digital protocol reference (Case B / B0 / C)
+
+> **Everything here is [COMMUNITY] and unverified on this desk.** Different Jiecang models, and different ports on one controller, use different protocols. Treat this as a hypothesis to test against captures, never as a list to send blind.
+
+### 13.1 Physical layer (reported)
 
 | Item | Reported value |
 |---|---|
-| UART | 9600 baud, 8 data bits, no parity, 1 stop bit |
-| Levels | Lines pulled up to 5 V by the controller, pulled low to signal |
-| RJ45 handset port (8 pins), one model | 1 HS3, 2 DTX (controller→handset), 3 GND, 4 HTX (handset→controller), 5 VCC 5 V, 6 HS2, 7 HS1, 8 HS0 |
-| RJ12 accessory port (6 pins), one model | 1 NC, 2 GND, 3 DTX, 4 VCC 5 V, 5 HTX, 6 NC |
+| UART | 9600 baud, 8N1 |
+| Levels | Pulled up to 5 V by the controller, pulled low to signal |
+| RJ45 handset port, one model | 1 HS3, 2 DTX (controller→handset), 3 GND, 4 HTX (handset→controller), 5 VCC 5 V, 6 HS2, 7 HS1, 8 HS0 |
+| RJ12 accessory port, one model | 1 NC, 2 GND, 3 DTX, 4 VCC 5 V, 5 HTX, 6 NC |
 
-### 9.2 Frame format (reported)
+### 13.2 Frame format (reported)
 
 ```
 [addr][addr][cmd][len][param × len][checksum][0x7E]
@@ -555,93 +693,139 @@ addr     = 0xF1 0xF1 (handset → controller) or 0xF2 0xF2 (controller → hands
 checksum = (cmd + len + Σparams) & 0xFF
 ```
 
-Example: `F1 F1 05 00 05 7E` = handset → controller, command 0x05, no params, checksum 0x05.
+### 13.3 Handset → controller (reported)
 
-### 9.3 Handset → controller commands (reported)
-
-| Function | Cmd | Frame | Relevance to Airo |
+| Function | Cmd | Frame | Use in Airo |
 |---|---|---|---|
-| Up (one step) | `0x01` | `F1 F1 01 00 01 7E` | `up`, repeated while held |
-| Down (one step) | `0x02` | `F1 F1 02 00 02 7E` | `down`, repeated while held |
-| Move to memory 1 | `0x05` | `F1 F1 05 00 05 7E` | Candidate for `preset_sit` |
-| Move to memory 2 | `0x06` | `F1 F1 06 00 06 7E` | Candidate for `preset_stand` |
-| Move to memory 3 / 4 | `0x27` / `0x28` | `F1 F1 27 00 27 7E` / `F1 F1 28 00 28 7E` | Not used |
-| Stop | `0x2B` | `F1 F1 2B 00 2B 7E` | Candidate for `stop` (one source only) |
-| Wake / poll | `0x29` | `F1 F1 29 00 29 7E` | Possibly needed to get height reports |
-| Request settings / heights | `0x07` | `F1 F1 07 00 07 7E` | Sources disagree on what it returns |
-| Move to absolute height (mm) | `0x1B` | `F1 F1 1B 02 HI LO CK 7E` | Not used in v1 (not a keypad function) |
-| Save memory 1 / 2 / 3 / 4 | `0x03` / `0x04` / `0x25` / `0x26` | | **Never sent by Airo** (overwrites user presets) |
-| Calibrate / limits / units / sensitivity | `0x91`, `0x20`–`0x23`, `0x0E`, `0x1D` | | **Never sent by Airo** |
+| Up (step) | `0x01` | `F1 F1 01 00 01 7E` | `desk.up`, repeated while held |
+| Down (step) | `0x02` | `F1 F1 02 00 02 7E` | `desk.down` |
+| Move to memory 1 / 2 | `0x05` / `0x06` | `F1 F1 05 00 05 7E` / `F1 F1 06 00 06 7E` | Candidates for sitting/standing |
+| Move to memory 3 / 4 | `0x27` / `0x28` | | Not used |
+| Stop | `0x2B` | `F1 F1 2B 00 2B 7E` | Candidate for `desk.stop` (one source only) |
+| Wake / poll | `0x29` | `F1 F1 29 00 29 7E` | Possibly needed for height reports |
+| Settings / heights | `0x07` | `F1 F1 07 00 07 7E` | Sources disagree on reply |
+| Move to height (mm) | `0x1B` | `F1 F1 1B 02 HI LO CK 7E` | Not used in v1 |
+| Save memory, calibrate, limits, units, sensitivity | `0x03` `0x04` `0x25` `0x26` `0x91` `0x20`–`0x23` `0x0E` `0x1D` | | **Never sent by Airo** |
 
-The mapping of the keypad's sitting and standing icons to memory 1 and memory 2 is an **[ASSUMPTION]**: Airo replays whatever frame the real keypad sends for each icon, as recorded in discovery, rather than relying on this table.
+Airo replays whatever frame the real keypad sends for each icon, as captured in discovery, rather than relying on this table.
 
-### 9.4 Controller → handset reports (reported)
+### 13.4 Controller → handset (reported)
 
 | Report | Cmd | Format | Example |
 |---|---|---|---|
-| Current height | `0x01` | `F2 F2 01 03 HI LO xx CK 7E`, height = HI×256+LO in mm (or tenths of an inch if the desk is set to inches); third param meaning unknown | `F2 F2 01 03 05 06 07 14 7E` → 1286 mm |
-| Memory 1–4 heights | `0x25`–`0x28` | 2 params, HI LO | |
-| Physical limits | `0x07` | 4 params: upper HI LO, lower HI LO | `05 14 02 8A` → 1300 / 650 mm |
+| Height | `0x01` | `F2 F2 01 03 HI LO xx CK 7E`; mm or tenths of an inch | `F2 F2 01 03 05 06 07 14 7E` → 1286 mm |
+| Memory 1–4 heights | `0x25`–`0x28` | HI LO | |
+| Physical limits | `0x07` | upper HI LO, lower HI LO | `05 14 02 8A` → 1300 / 650 mm |
 
-### 9.5 Known pitfalls (reported)
+### 13.5 Pitfalls (reported)
 
-- Some controllers sometimes fall into a second, unframed serial format after idle time. Its trigger is not known.
-- Saving a memory is not acknowledged by the controller.
-- Height reports repeat many times while the display is awake. A single report is not a final value.
-- On encoded-line handsets, pulling two button lines together (`HS0` + `HS3` on one model) wakes the controller to send height reports. This is a possible height-feedback route even in Case C.
-- Sources disagree on: which port carries the framed protocol on a given model, what `0x07` returns, and whether `0x2B` (stop) exists.
+- Some controllers fall into a second, unframed format after idle time.
+- Memory saves are not acknowledged.
+- Height reports repeat while the display is awake.
+- On encoded-line handsets, pulling `HS0` + `HS3` low together wakes height reporting on one model: a possible height-feedback route in Case C.
+- Sources disagree on which port carries frames, what `0x07` returns, and whether `0x2B` exists.
 
-### 9.6 About the "JIECANG_0xFF00" label
+### 13.6 "JIECANG_0xFF00"
 
-An earlier dashboard screenshot labelled the desk profile `JIECANG_0xFF00`. No public source found during this research uses that identifier for a Jiecang protocol or model. Its origin is **[UNKNOWN]** (Q2); it is not used anywhere in this spec.
+An earlier dashboard labelled the desk profile `JIECANG_0xFF00`. No public source found uses that identifier. Origin **[UNKNOWN]** (Q2).
 
 ### Sources
 
-- phord/Jarvis, README and discussion #4: https://github.com/phord/Jarvis
+- phord/Jarvis README and discussion #4: https://github.com/phord/Jarvis
 - DeskUp Pro RJ12 hex codes: https://smarthomeguys.github.io/DeskUp-Pro-Controller-RJ12/docs/diy/desk-hex-codes.html
 - Home Assistant community, "Desky Standing Desk (ESPHome) [Works with Desky, Uplift, Jiecang, Assmann & others]": https://community.home-assistant.io/t/desky-standing-desk-esphome-works-with-desky-uplift-jiecang-assmann-others/383790
-- Rocka84 `jiecang_desk_controller` ESPHome component (referenced via the DeskUp page; its own README was not readable during research): https://github.com/Rocka84/esphome_components
+- Rocka84 ESPHome components (via the DeskUp page; README not readable during research): https://github.com/Rocka84/esphome_components
 
 ---
 
-## 10. Bring-up and test plan
-
-Each stage must pass before the next starts. Record results in this document.
+## 14. Bench bring-up plan
 
 | Stage | What | Pass criteria |
 |---|---|---|
-| T0 | Discovery (section 4), passive only | Section 4.4 table filled in |
-| T1 | Module on the bench, **not connected to the desk**. Drive injectors into a dummy load (5 V + 10 kΩ pull-ups). | Correct line pulled low for each action; watchdog drops enables within 200 ms when firmware is halted; `MANUAL ONLY` cuts all outputs; unpowered selectors connect keypad side to controller side (continuity test). |
-| T2 | Module inline, `MANUAL ONLY` on. | Desk behaves exactly as without the module, all five buttons. |
-| T3 | `MANUAL ONLY` off, app idle. | Desk still behaves exactly as without the module. Sense channels report every physical press. |
-| T4 | App `up`/`down` hold, desk empty, hand on mains switch. | Movement starts and stops with the app; lease expiry stops movement when Wi-Fi is cut on the phone. |
-| T5 | Conflict tests: press physical keys during each app action. | App releases within 20 ms; no unrequested movement (especially Case A2/C preset codes). |
-| T6 | Presets and stop. | Presets reach the same height as from the keypad; verified stop method interrupts a preset. |
-| T7 | Faults: pull USB during movement, reboot during movement, kill the app. | Movement stops (or never starts); keypad works immediately afterwards. |
-| T8 | 1-week soak with normal daily use. | No unexpected movement, no keypad malfunction. |
+| T0 | Discovery (section 5), passive only | 5.4 table filled in |
+| T1 | Interface Board on the bench, **not on the desk**; dummy 5 V + 10 kΩ pull-ups | Correct lines per command; watchdog trips ≤ 200 ms; MANUAL ONLY cuts outputs; unpowered selector connects A↔B (continuity) |
+| T2 | Inline, MANUAL ONLY on | Desk behaves exactly as without Airo |
+| T3 | MANUAL ONLY off, app idle | Still identical; every physical press sensed |
+| T4 | `desk.up`/`desk.down`, desk empty, hand on mains | Moves only while leased; Wi-Fi cut stops it |
+| T5 | Physical keys during each app command | Release ≤ 20 ms; no phantom moves |
+| T6 | Presets and stop | Same heights as keypad; verified stop method works |
+| T7 | Pull USB-C / reboot / kill app mid-move | Stops or never starts; keypad works immediately |
+| T8 | One-week soak | No unexpected movement or keypad fault |
 
 ---
 
-## 11. Cost note
+## 15. Purchase stages and budget
 
-No replacement motor, gearbox or motor driver is needed in any case. The interface parts in section 5.5 are low-cost signal components. The actual bill depends on the case found in discovery (Case A1 needs injectors and sense only; Cases A2/C/B add a selector relay). A logic analyzer is the one tool worth buying before anything else, because it settles the interface question.
+Total envelope: ₹5,000–₹10,000, not spent up front. Prices below are the user's planning estimates or listed prices, not verified quotes.
+
+### 15.1 Buy now (development, simulation and passive discovery)
+
+| Item | Purpose | Note |
+|---|---|---|
+| ESP32-S3 development board with USB-C | Airo Core prototype | ⚠ C1: not the DevKitC-32E (classic ESP32) |
+| Digital multimeter (listed ₹869) | Voltage, resistance, continuity | |
+| 8-channel 24 MHz USB logic analyzer | Passive capture | Check input range covers 5 V (C9) |
+| Two passive breakouts **matching the keypad plug** | Pin access without cutting | ⚠ C3: check plug type first; no Ethernet magnetics |
+| 830-point breadboard + jumper kit | Isolated bench prototypes only | Never for unknown desk signals |
+| USB-to-TTL adapter (3.3 V) | Firmware diagnostics | Never on desk pins |
+| 10 kΩ resistors (probe series resistors) | Safe passive probing | Small cost, needed for step 6 |
+
+### 15.2 Do not buy yet
+
+| Component | Waiting because |
+|---|---|
+| Signal relay (4-pole / DPDT) | Contact count and arrangement depend on the case |
+| PhotoMOS / optocouplers | Signal type and polarity |
+| Analog switch IC | Not used as the fail-safe element in any case |
+| Digital isolator / level shifter | Depends on measured logic voltage and protocol |
+| Port A/B connectors | Depends on the desk's connector |
+| Custom PCB, enclosure | Needs the finalised schematic |
+| Any desk power converter | Airo is powered from USB-C (R1) |
+| Generic relay module | Not acceptable as the bypass (C10) |
+
+### 15.3 Budget stages
+
+| Stage | Purchase | Target |
+|---|---|---|
+| 1 | ESP32-S3 board, breadboard, wires, USB-C cable | ₹1,000–₹1,500 |
+| 2 | Multimeter, passive breakouts | ₹1,000–₹1,800 |
+| 3 | Logic analyzer and probes | ₹500–₹1,200 |
+| 4 | Interface components after identification | ₹800–₹2,000 |
+| 5 | PCB, enclosure, connectors | ₹1,000–₹2,000 |
 
 ---
 
-## 12. Open questions
+## 16. Retrofit roadmap
+
+| Phase | Name | Deliverable | Exit criterion |
+|---|---|---|---|
+| 1 | Laptop simulation | `airo-core` native build, `VirtualHardwareAdapter`, virtual keypad and selector wired to the 3D desk | Section 12.1 matrix passes in CI |
+| 2 | ESP32 bench prototype | `airo-core` on ESP32-S3 with `Esp32HardwareAdapter`, driving a simulated keypad circuit (LEDs/pull-ups), not the desk | Same matrix passes against the board; BLE provisioning and mDNS work |
+| 3 | Interface identification | Discovery (section 5) | 5.4 table complete, captures committed |
+| 4 | Interface Board | Schematic and board for the identified case | Bench T1 passes |
+| 5 | Desk integration | Airo inline with original keypad | T2–T8 pass; manual operation independently verified |
+| 6 | Alexa | Home Assistant integration (11.2) | Voice sitting/standing/stop work; no Core changes |
+
+These retrofit phases are separate from the simulator's PRD phases in `docs/PRD.md` (added with the Phase 1 simulator work). Retrofit phase 1 reuses that simulator's 3D desk and desk-controller model.
+
+---
+
+## 17. Open questions
 
 | # | Question | How to answer |
 |---|---|---|
-| Q1 | Which controller model is it, and which connector does the keypad use? | Discovery step 1 |
-| Q2 | Where did the `JIECANG_0xFF00` label come from, and does it identify anything real? | Ask the user / check the earlier dashboard's source |
-| Q3 | Is the keypad plain switches, encoded lines, a resistor ladder, a digital protocol, or hybrid? | Discovery steps 2–7 |
-| Q4 | What exactly does the circular-arrow button do on short and long press? | Observe with desk empty; check the desk manual |
-| Q5 | Are presets one-touch or hold-to-run? | Press and release a preset button with desk empty |
-| Q6 | What stops a preset move in progress without starting another movement? | Bench test T6 |
-| Q7 | Does the controller report height on any line we can read, and in what units? | Logic analyzer capture; try the wake behaviour noted in 9.5 |
-| Q8 | Does the controller have a spare accessory port (Case B0)? | Discovery step 3 |
-| Q9 | How does the controller react to two button lines low at once? | Bench test T5, desk empty |
-| Q10 | Is plain HTTP on the home LAN acceptable, or is TLS needed in v1? | User decision |
-| Q11 | Should more than one phone be able to control the desk? | User decision; API already supports one owner plus stop-from-anyone |
-| Q12 | How much current can the keypad port supply, in case powering the ESP32 from it is ever wanted? | Measure; default remains independent USB power |
-| Q13 | Does adding the pass-through cable length affect a digital bus (reflections, timing)? | Check captures with module inline at T2 |
+| Q1 | Controller model and keypad connector? | Discovery step 1 |
+| Q2 | Origin of the `JIECANG_0xFF00` label? | User / earlier dashboard source |
+| Q3 | Interface case? | Discovery steps 2–7 |
+| Q4 | What does the circular-arrow button do, short and long press? | Observe with desk empty; manual |
+| Q5 | Presets one-touch or hold-to-run? | Press and release with desk empty |
+| Q6 | What stops a preset in progress without starting a new move? | T6 |
+| Q7 | Is height reported anywhere, and in what units? | Capture; try the wake behaviour in 13.5 |
+| Q8 | Spare accessory port (Case B0)? | Discovery step 3 |
+| Q9 | Controller response to two button lines low at once? | T5, desk empty |
+| Q10 | Plain HTTP on the LAN acceptable, or TLS in v1? | User decision |
+| Q11 | More than one phone controlling the desk? | User decision; API supports one owner plus stop-from-anyone |
+| Q12 | Keypad port current budget? | Measure; default stays USB-C power |
+| Q13 | Does the added cable length affect a digital bus? | Captures at T2 |
+| Q14 | Strict or controller-native reading of "presets require confirmed position feedback" (C4)? | User decision |
+| Q15 | Exact ESP32-S3 board and price (C1)? | Pick before ordering stage 1 |
