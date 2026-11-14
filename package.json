@@ -13,7 +13,12 @@
     "firmware:test": "npm run firmware:build && ctest --test-dir firmware/build --output-on-failure",
     "airo": "npm run firmware:build && ./firmware/build/airo-host",
     "test:e2e": "vitest run -c vitest.e2e.config.ts",
-    "sim": "node scripts/dev-all.mjs"
+    "sim": "node scripts/dev-all.mjs",
+    "test:e2e:esp32": "vitest run -c vitest.e2e.config.ts e2e/esp32-adapter.e2e.test.ts",
+    "test:hil": "node scripts/hil.mjs",
+    "esp32:build": "pio run -d firmware/esp32",
+    "esp32:flash": "pio run -d firmware/esp32 -t upload",
+    "esp32:monitor": "pio device monitor -d firmware/esp32"
   },
   "dependencies": {
     "@react-three/drei": "^10.7.9",

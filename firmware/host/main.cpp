@@ -7,7 +7,13 @@
 //   GET  /api/v1/status, POST /api/v1/selftest, GET/PATCH /api/v1/config
 //   WS   /api/v1/ws                   (token in first message)
 //   WS   /bridge                      (the simulated Interface Board, Port C)
+//
+// With --adapter esp32 it runs Esp32HardwareAdapter (the board's adapter,
+// pin-level, bench mode, in-memory GPIO) and serves WS /bench instead of
+// /bridge: exactly what the ESP32-S3 serves, so the hardware-in-the-loop
+// suite can be run without the board.
 #include <chrono>
+#include <thread>
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
@@ -17,8 +23,12 @@
 #include <string>
 
 #include "airo/api.h"
+#include "airo/app_server.h"
+#include "airo/board/bench_link.h"
+#include "airo/board/esp32_hardware_adapter.h"
 #include "airo/command_service.h"
 #include "airo/json.h"
+#include "host_io.h"
 #include "net_server.h"
 #include "virtual_hardware_adapter.h"
 
@@ -39,15 +49,9 @@ struct SteadyClock : Clock {
   }
 };
 
-HttpResponse json(int status, const Json& body) { return HttpResponse{status, "application/json", body.dump(), {}}; }
-
-HttpResponse error(ErrorCode code, const std::string& detail = {}, const std::string& request_id = {}) {
-  return json(httpStatus(code), api::errorJson(request_id, code, detail));
-}
-
 void usage() {
   std::fprintf(stderr,
-               "usage: airo-host [--port N] [--token T] [--device-id ID] [--set key=value ...] [--quiet]\n"
+               "usage: airo-host [--port N] [--token T] [--device-id ID] [--adapter virtual|esp32] [--set key=value ...] [--quiet]\n"
                "  --set accepts any PATCH /api/v1/config field, e.g. --set presets_require_height_feedback=true\n");
 }
 
@@ -58,6 +62,7 @@ int main(int argc, char** argv) {
   std::string token = "airo-sim-token";
   Config cfg;
   bool quiet = false;
+  std::string adapter = "virtual";
   Json patch = Json::object();
 
   for (int i = 1; i < argc; ++i) {
@@ -73,6 +78,13 @@ int main(int argc, char** argv) {
     else if (a == "--token") token = next();
     else if (a == "--device-id") cfg.device_id = next();
     else if (a == "--quiet") quiet = true;
+    else if (a == "--adapter") {
+      adapter = next();
+      if (adapter != "virtual" && adapter != "esp32") {
+        usage();
+        return 2;
+      }
+    }
     else if (a == "--set") {
       const std::string kv = next();
       const size_t eq = kv.find('=');
@@ -103,7 +115,15 @@ int main(int argc, char** argv) {
   std::signal(SIGPIPE, SIG_IGN);
 
   SteadyClock clock;
-  host::VirtualHardwareAdapter hw(clock, cfg.watchdog_period_ms);
+  const bool esp32 = adapter == "esp32";
+  host::VirtualHardwareAdapter vhw(clock, cfg.watchdog_period_ms);
+  // Board adapter on in-memory pins: bench mode, desk mode not compiled in.
+  host::HostGpio gpio;
+  host::HostUart htx, dtx;
+  board::BenchIo io(gpio, &htx, &dtx, board::defaultPinMap(), false);
+  board::Esp32HardwareAdapter bhw(io, clock, InterfaceCase::A2, cfg.watchdog_period_ms);
+  board::BenchLink bench(io, bhw);
+  HardwareAdapter& hw = esp32 ? static_cast<HardwareAdapter&>(bhw) : static_cast<HardwareAdapter&>(vhw);
   CommandService core(hw, clock, cfg);
   core.begin();  // no board yet: self-test fails, FAULT until the board says hello
 
@@ -113,220 +133,164 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "airo-host: cannot listen on 127.0.0.1:%u: %s\n", port, std::strerror(errno));
     return 1;
   }
-  std::printf("airo-host listening on http://127.0.0.1:%d (device %s)\n", bound, cfg.device_id.c_str());
+  std::printf("airo-host listening on http://127.0.0.1:%d (device %s, %s adapter)\n", bound, cfg.device_id.c_str(),
+              adapter.c_str());
   std::printf("AIRO_HOST_READY port=%d\n", bound);
   if (token == "airo-sim-token")
     std::printf("Using the default simulator token 'airo-sim-token'. The ESP32-S3 generates a random one at BLE setup.\n");
   std::fflush(stdout);
 
-  int bridge_conn = -1;
-  std::set<int> app_pending;          // WS clients that have not authenticated yet
-  std::set<int> app_clients;          // authenticated WS clients
-  uint64_t last_counter = ~0ull;
-  uint64_t last_periodic = 0;
+  int link_conn = -1;  // the Interface Board (/bridge) or the bench link (/bench)
+  bool halted = false;  // bench "halt": the core stops as if it crashed
 
-  auto log = [&](const char* fmt, auto... args) {
+  auto log = [&](const std::string& line) {
     if (quiet) return;
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wformat-security"
-#pragma GCC diagnostic ignored "-Wformat-nonliteral"
-    std::printf(fmt, args...);
-#pragma GCC diagnostic pop
-    std::printf("\n");
+    std::printf("%s\n", line.c_str());
     std::fflush(stdout);
   };
 
-  auto online = [&]() { return hw.powered(); };
+  auto online = [&]() { return esp32 ? bhw.powered() : vhw.powered(); };
 
-  auto infoCtx = [&]() {
+  AppServer::Hooks hooks;
+  hooks.send = [&server](int c, const std::string& t) { server.sendText(c, t); };
+  hooks.close = [&server](int c) { server.close(c); };
+  hooks.online = online;
+  hooks.log = log;
+  hooks.info = [&]() {
     api::InfoContext ctx;
     ctx.hardware = "laptop-sim";
-    ctx.adapter = "virtual";
-    ctx.interface_case = hw.interfaceCase();
-    ctx.height_feedback = hw.interfaceCase() == InterfaceCase::B;
     ctx.stop_method_verified = false;
-    ctx.board_connected = hw.connected() && hw.helloReceived();
+    if (esp32) {
+      ctx.adapter = "esp32";
+      ctx.interface_case = bench.helloReceived() ? std::optional(bhw.interfaceCase()) : std::nullopt;
+      ctx.height_feedback = bhw.interfaceCase() == InterfaceCase::B;
+      ctx.board_connected = bench.helloReceived();
+    } else {
+      ctx.adapter = "virtual";
+      ctx.interface_case = vhw.interfaceCase();
+      ctx.height_feedback = vhw.interfaceCase() == InterfaceCase::B;
+      ctx.board_connected = vhw.connected() && vhw.helloReceived();
+    }
     return ctx;
   };
-
-  auto broadcast = [&](const Json& j) {
-    const std::string text = j.dump();
-    for (int c : app_clients) server.sendText(c, text);
+  hooks.extend_info = [&](Json& info) {
+    if (!esp32) return;
+    info.set("bench", bench.state());
   };
-
-  auto authorized = [&](const HttpRequest& r) {
-    auto it = r.headers.find("authorization");
-    return it != r.headers.end() && it->second == "Bearer " + token;
-  };
-
-  auto dropApps = [&]() {
-    std::set<int> all = app_clients;
-    all.insert(app_pending.begin(), app_pending.end());
-    for (int c : all) server.close(c);
-  };
+  AppServer app(core, clock, token, hooks);
 
   server.onHttp = [&](const HttpRequest& r) -> HttpResponse {
-    HttpResponse cors;
+    HttpResponse res;
     if (r.method == "OPTIONS") {
-      cors.status = 204;
-      cors.body.clear();
-      cors.headers["Access-Control-Allow-Origin"] = "*";
-      cors.headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type";
-      cors.headers["Access-Control-Allow-Methods"] = "GET, POST, PATCH, OPTIONS";
-      return cors;
+      res.status = 204;
+      res.body.clear();
+      res.headers["Access-Control-Allow-Origin"] = "*";
+      res.headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type";
+      res.headers["Access-Control-Allow-Methods"] = "GET, POST, PATCH, OPTIONS";
+      return res;
     }
-    HttpResponse res = [&]() -> HttpResponse {
-      if (r.path == "/api/v1/info" && r.method == "GET") {
-        Json info = api::infoJson(core.config(), infoCtx());
-        info.set("powered", online());
-        return json(200, info);
-      }
-      if (r.path.rfind("/api/v1/", 0) != 0) return json(404, api::errorJson("", ErrorCode::BadRequest, "not found"));
-      if (!authorized(r)) return error(ErrorCode::Unauthorized);
-      if (!online()) {
-        Json j = api::errorJson("", ErrorCode::NotReady, "powered_off");
-        return json(503, j);
-      }
-      if (r.path == "/api/v1/status" && r.method == "GET") return json(200, api::statusJson(core.status()));
-      if (r.path == "/api/v1/selftest" && r.method == "POST") {
-        const bool ok = core.runSelfTest();
-        Json j = api::statusJson(core.status());
-        j.set("self_test", ok);
-        return json(ok ? 200 : 423, j);
-      }
-      if (r.path == "/api/v1/config") {
-        if (r.method == "GET") return json(200, api::configJson(core.config()));
-        if (r.method == "PATCH") {
-          auto body = Json::parse(r.body);
-          if (!body) return error(ErrorCode::BadRequest, "body is not JSON");
-          std::string why;
-          auto c = api::patchConfig(core.config(), *body, &why);
-          if (!c) return error(ErrorCode::BadRequest, why);
-          const ErrorCode e = core.setConfig(*c, &why);
-          if (e != ErrorCode::None) return error(e, why);
-          return json(200, api::configJson(core.config()));
-        }
-      }
-      if (r.path == "/api/v1/commands" && r.method == "POST") {
-        auto body = Json::parse(r.body);
-        if (!body) return error(ErrorCode::BadRequest, "body is not JSON");
-        std::string why;
-        auto env = api::parseEnvelope(*body, &why);
-        if (!env) return error(ErrorCode::BadRequest, why, (*body)["request_id"].asString());
-        env->client_id = "rest:" + env->source;
-        const CommandResult result = core.submit(*env);
-        Json out = api::ackJson(env->request_id, result);
-        out.set("status", api::statusJson(core.status()));
-        log("REST %s from %s -> %s%s", env->command.c_str(), env->source.c_str(), toString(result.error),
-            result.duplicate ? " (duplicate)" : "");
-        return json(httpStatus(result.error), out);
-      }
-      return json(405, api::errorJson("", ErrorCode::BadRequest, "method not allowed"));
-    }();
+    auto it = r.headers.find("authorization");
+    const ApiResponse a = app.http({r.method, r.path, it != r.headers.end() ? it->second : "", r.body});
+    res.status = a.status;
+    res.body = a.body;
     res.headers["Access-Control-Allow-Origin"] = "*";
     return res;
   };
 
   server.onWsOpen = [&](int conn, const HttpRequest& r) -> bool {
-    if (r.path == "/bridge") {
-      if (bridge_conn != -1) return false;  // one Interface Board
-      bridge_conn = conn;
-      hw.attach([&server, conn](const std::string& text) { server.sendText(conn, text); });
-      log("bridge: interface board connected");
+    if (r.path == (esp32 ? "/bench" : "/bridge")) {
+      if (link_conn != -1) return false;  // one Interface Board
+      auto send = [&server, conn](const std::string& text) { server.sendText(conn, text); };
+      if (esp32) {
+        std::string why;
+        if (!bench.open(send, &why)) {
+          log("bench: refused: " + why);
+          return false;
+        }
+      } else {
+        vhw.attach(send);
+      }
+      link_conn = conn;
+      log(esp32 ? "bench: link connected" : "bridge: interface board connected");
       return true;
     }
-    if (r.path == "/api/v1/ws") {
-      if (!online()) return false;
-      app_pending.insert(conn);
-      return true;
-    }
+    if (r.path == "/api/v1/ws") return app.wsOpen(conn);
     return false;
   };
 
   server.onWsClose = [&](int conn) {
-    if (conn == bridge_conn) {
-      bridge_conn = -1;
-      hw.detach();
+    if (conn == link_conn) {
+      link_conn = -1;
+      if (esp32) bench.close();
+      else vhw.detach();
       core.begin();  // board gone: self-test fails -> FAULT
-      log("bridge: interface board disconnected");
+      log(esp32 ? "bench: link disconnected" : "bridge: interface board disconnected");
       return;
     }
-    app_pending.erase(conn);
-    if (app_clients.erase(conn)) core.clientGone("ws:" + std::to_string(conn));
+    app.wsClose(conn);
+  };
+
+  auto powerChanged = [&]() {
+    if (online()) {
+      core.begin();
+      log("bridge: Airo power restored, core booting");
+    } else {
+      app.dropAll();
+      log("bridge: Airo power cut");
+    }
   };
 
   server.onWsText = [&](int conn, const std::string& text) {
-    auto msg = Json::parse(text);
-    if (conn == bridge_conn) {
+    if (conn == link_conn) {
+      auto msg = Json::parse(text);
       if (!msg) return;
-      const auto r = hw.onBridgeMessage(*msg);
+      if (esp32) {
+        using R = board::BenchLink::Result;
+        switch (bench.onMessage(*msg)) {
+          case R::Hello:
+            halted = false;
+            core.begin();
+            log(std::string("bench: hello, interface case ") + toString(bhw.interfaceCase()) + ", core rebooting");
+            break;
+          case R::PowerChanged: powerChanged(); break;
+          case R::Hang: std::this_thread::sleep_for(std::chrono::milliseconds(bench.hangMs())); break;
+          case R::Halt:
+            halted = true;
+            log("bench: halted");
+            break;
+          case R::Reboot:
+            halted = false;
+            bhw.setPowered(true);
+            app.dropAll();
+            core.begin();
+            log("bench: reboot");
+            break;
+          case R::Invalid: log("bench: invalid message " + text); break;
+          case R::None: break;
+        }
+        return;
+      }
+      const auto r = vhw.onBridgeMessage(*msg);
       if (r == host::VirtualHardwareAdapter::BridgeResult::Hello ||
           r == host::VirtualHardwareAdapter::BridgeResult::CaseChanged) {
         core.begin();
-        log("bridge: board hello, interface case %s, core rebooting", toString(*hw.interfaceCase()));
+        log(std::string("bridge: board hello, interface case ") + toString(*vhw.interfaceCase()) + ", core rebooting");
       } else if (r == host::VirtualHardwareAdapter::BridgeResult::PowerChanged) {
-        if (hw.powered()) {
-          core.begin();
-          log("bridge: Airo power restored, core booting");
-        } else {
-          dropApps();
-          log("bridge: Airo power cut");
-        }
+        powerChanged();
       }
       return;
     }
-    if (app_pending.count(conn)) {
-      if (!msg || (*msg)["type"].asString() != "auth" || (*msg)["token"].asString() != token) {
-        server.sendText(conn, api::errorJson("", ErrorCode::Unauthorized).dump());
-        server.close(conn);
-        app_pending.erase(conn);
-        return;
-      }
-      app_pending.erase(conn);
-      app_clients.insert(conn);
-      Json ok = Json::object();
-      ok.set("type", "auth_ok");
-      ok.set("info", api::infoJson(core.config(), infoCtx()));
-      server.sendText(conn, ok.dump());
-      server.sendText(conn, api::statusJson(core.status()).dump());
-      return;
-    }
-    if (!app_clients.count(conn)) return;
-    if (!msg) {
-      server.sendText(conn, api::errorJson("", ErrorCode::BadRequest, "not JSON").dump());
-      return;
-    }
-    std::string why;
-    auto env = api::parseEnvelope(*msg, &why);
-    if (!env) {
-      server.sendText(conn, api::errorJson((*msg)["request_id"].asString(), ErrorCode::BadRequest, why).dump());
-      return;
-    }
-    env->client_id = "ws:" + std::to_string(conn);
-    const CommandResult res = core.submit(*env);
-    server.sendText(conn, api::ackJson(env->request_id, res).dump());
-    if (env->command == "desk.get_status") server.sendText(conn, api::statusJson(core.status()).dump());
-    if (env->command != "desk.renew" || !res.accepted())
-      log("WS %s from %s -> %s%s", env->command.c_str(), env->source.c_str(), toString(res.error),
-          res.duplicate ? " (duplicate)" : "");
+    app.wsText(conn, text);
   };
 
   while (!g_stop) {
     server.poll(2);
-    hw.service();
+    if (halted) continue;
+    if (esp32) bhw.service();
+    else vhw.service();
     if (!online()) continue;
     core.tick();
-    for (const CoreEvent& e : core.takeEvents()) {
-      log("event %s%s%s", toString(e.kind), e.direction ? " " : "", e.direction ? toString(*e.direction) : "");
-      broadcast(api::eventJson(e));
-    }
-    const uint64_t now = clock.nowMs();
-    const bool active = core.status().state == DeskState::AppActive;
-    if (core.changeCounter() != last_counter || (active && now - last_periodic >= 500)) {
-      last_counter = core.changeCounter();
-      last_periodic = now;
-      broadcast(api::statusJson(core.status()));
-    }
+    app.loop();
   }
   std::printf("airo-host: stopping\n");
   return 0;

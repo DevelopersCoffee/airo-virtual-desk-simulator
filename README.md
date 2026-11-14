@@ -14,6 +14,10 @@ This is **Phase 1: mechanical visualisation** from the [PRD](docs/PRD.md). There
 
 The dashboard now also runs the Airo retrofit end to end: the C++ firmware core (`firmware/`) drives the 3D desk through a virtual interface board, original keypad and original controller, and the dashboard's app buttons use the local REST/WebSocket API. Start it with `npm run sim` (needs CMake and a C++17 compiler). See [docs/LAPTOP_SIMULATION.md](docs/LAPTOP_SIMULATION.md).
 
+## ESP32-S3 bench prototype (retrofit phase 2)
+
+`firmware/esp32/` builds the same firmware core for the ESP32-S3 (PlatformIO, ESP-IDF) with `Esp32HardwareAdapter` on GPIO. It runs in **bench mode only**: outputs stay high impedance unless bench drive is turned on at the serial console, and desk mode is not compiled in. The same scenario table runs against a simulated board in CI (`npm run test:e2e`) and against the real board with `node scripts/hil.mjs`. Flashing, breadboard wiring and the bench checks are in [docs/BENCH_TEST.md](docs/BENCH_TEST.md). Nothing in it has been run on hardware yet.
+
 ## Run it
 
 ```bash
@@ -23,7 +27,8 @@ npm test           # unit tests for the mechanical math and simulation
 npm run build      # type-check and production build
 npm run sim        # firmware host + dashboard (laptop end-to-end simulation)
 npm run firmware:test   # C++ firmware core unit tests
-npm run test:e2e        # spec 12.1 test matrix against the real firmware host
+npm run test:e2e        # spec 12.1 matrix against the firmware host, virtual and ESP32 adapters
+node scripts/hil.mjs --list   # the same scenarios against the ESP32-S3 on the bench (docs/BENCH_TEST.md)
 ```
 
 Everything runs locally and offline.
