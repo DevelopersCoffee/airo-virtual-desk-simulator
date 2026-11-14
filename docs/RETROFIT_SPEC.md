@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | Draft v0.2, for review before buying interface parts or touching any wiring |
+| Status | Draft v0.2.1, for review before buying interface parts or touching any wiring |
 | Date | 2026-11-14 |
 | Scope | Add local Wi-Fi app control (and later Alexa) to the existing Green Soul desk while keeping its original motor, controller and five-button keypad |
 | Out of scope | Replacing the motor, gearbox or motor driver; changing the controller's firmware; cloud services in the core device |
@@ -45,7 +45,7 @@ Facts are tagged:
 | C1 | Buy **ESP32-DevKitC-32E V4** (₹600) | Architecture now says **ESP32-S3** | ⚠ The DevKitC-32E is a classic ESP32 (WROOM-32E), not an S3. Buy an **ESP32-S3-DevKitC-1** (or equivalent S3 board with USB-C) instead so the prototype matches the product. Price not yet checked. |
 | C2 | Avoid RJ45; use a dedicated keyed connector | The ultimate bypass is "unplug Airo, plug the keypad back into the controller" (G4) | ⚠ Airo's **own** connections (Port C, Core ↔ Interface Board) use the keyed custom connector. **Ports A and B must mate with whatever connector the desk already uses** (possibly RJ45 or RJ12), otherwise the keypad cannot be plugged into Airo without cutting its cable, and Airo cannot plug into the controller. The desk's connector is not Airo's choice. |
 | C3 | Buy two **RJ45** passive breakouts now | Desk connector type is unknown | ⚠ Look at the keypad plug first (discovery step 1, a 2-minute check needing no tools). Buy RJ45 breakouts only if it is an 8-pin modular plug; RJ12 (6-pin) or a proprietary plug needs a different breakout. |
-| C4 | "Presets require confirmed position feedback" | Presets can be executed by the controller's own memory (replaying the keypad's sit/stand button), which needs no feedback in Airo | ⚠ **Decision needed (Q14).** This spec applies the rule to *Airo-computed* target heights (never offered without feedback), and allows *controller-native* presets without feedback, because the controller already performs them from the keypad today. If the user wants the stricter reading, `desk.sitting`/`desk.standing` stay disabled until height feedback exists. |
+| C4 | "Presets require confirmed position feedback" | Presets can be executed by the controller's own memory (replaying the keypad's sit/stand button), which needs no feedback in Airo | **Resolved (user decision, 2026-11-14):** the rule applies to *Airo-computed* target heights, which are never offered without feedback. *Controller-native* presets (`desk.sitting`, `desk.standing`) are allowed without feedback, because the controller already performs them from the keypad today. |
 | C5 | "STOP has priority" | Physical keypad must always win | Consistent once ordered: hardware bypass > physical keypad > STOP > app movement (section 7.2). |
 | C6 | "Conflict is rejected or safely arbitrated" | Shared encoded button lines make simultaneous presses dangerous (Down=1 + Up=2 reads as Preset 1) | Kept: on encoded lines, Airo never drives in parallel with the keypad; a fail-safe selector chooses one source (section 6.3). Conflicts resolve to "keypad wins, app releases". |
 | C7 | Virtual selector offers "Electrical / digital / bypass" modes | User's own note: these are capabilities, not modes to switch between until the circuit is known | Consistent. The real board is built for exactly one interface case; only bypass vs Airo-path is switchable at runtime. The simulator may model all cases. |
@@ -166,8 +166,8 @@ Using a small I²C expander (for example MCP23017) on the Interface Board keeps 
 |---|---|---|
 | UP arrow | `desk.up` | Hold-to-move with lease **[ASSUMPTION]** |
 | DOWN arrow | `desk.down` | Hold-to-move with lease **[ASSUMPTION]** |
-| Sitting icon | `desk.sitting` | Controller-native preset; see C4 |
-| Standing icon | `desk.standing` | Controller-native preset; see C4 |
+| Sitting icon | `desk.sitting` | Controller-native preset; allowed without height feedback (C4) |
+| Standing icon | `desk.standing` | Controller-native preset; allowed without height feedback (C4) |
 | Circular arrow | `desk.reset` (reserved) | **[UNKNOWN]**; not in the v1 command set (section 10.7) |
 | (none) | `desk.stop` | App-side concept; method in section 7.3 |
 | (none) | `desk.get_status` | Read-only |
@@ -358,7 +358,7 @@ Rules (merging the user's command-service rules with v0.1):
 - No app command starts while the keypad is active or within 300 ms after it ends; after a manual press, commands are rejected for 1 s.
 - One owner per active command; others get `busy`, but anyone may stop.
 - A new movement first releases the previous one, waits 50 ms, then applies.
-- Presets: see C4 and Q14.
+- Controller-native presets are allowed without height feedback; Airo-computed target heights require confirmed feedback (C4).
 - Local authentication for every command.
 
 ### 7.3 Movement semantics
@@ -505,8 +505,8 @@ The user's earlier example form `{"command":"move","direction":"up"}` maps to `d
 | `desk.up` | Hold-to-move up | Lease; renew with `desk.renew` |
 | `desk.down` | Hold-to-move down | Lease |
 | `desk.stop` | Release all, then stop method (7.3) | Always accepted from any authenticated source |
-| `desk.sitting` | Controller sitting preset | C4 / Q14 |
-| `desk.standing` | Controller standing preset | C4 / Q14 |
+| `desk.sitting` | Controller sitting preset | No feedback needed (C4) |
+| `desk.standing` | Controller standing preset | No feedback needed (C4) |
 | `desk.get_status` | Returns status (10.5) | Read-only |
 | `desk.renew` | Extend the active lease | Owner only |
 | `desk.release` | End hold-to-move | Owner only |
@@ -576,7 +576,7 @@ The app shows `-- cm` / "Height feedback not yet confirmed" whenever `height_mm`
 |---|---|---|
 | 400 | `bad_request` | Malformed envelope or unknown command |
 | 401 | `unauthorized` | Missing or wrong token |
-| 403 | `command_not_enabled` | For example `desk.reset`, or presets under strict C4 |
+| 403 | `command_not_enabled` | For example `desk.reset` |
 | 404 | `wrong_device` | `device_id` mismatch |
 | 409 | `manual_active` | Keypad in use or within quiet time |
 | 409 | `bypass_active` | MANUAL ONLY on |
@@ -827,5 +827,5 @@ These retrofit phases are separate from the simulator's PRD phases in `docs/PRD.
 | Q11 | More than one phone controlling the desk? | User decision; API supports one owner plus stop-from-anyone |
 | Q12 | Keypad port current budget? | Measure; default stays USB-C power |
 | Q13 | Does the added cable length affect a digital bus? | Captures at T2 |
-| Q14 | Strict or controller-native reading of "presets require confirmed position feedback" (C4)? | User decision |
+| Q14 | ~~Strict or controller-native reading of preset feedback rule?~~ | **Resolved:** controller-native presets allowed (C4) |
 | Q15 | Exact ESP32-S3 board and price (C1)? | Pick before ordering stage 1 |
