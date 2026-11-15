@@ -22,3 +22,22 @@ jobs:
       - name: End-to-end simulation matrix (spec 12.1)
         run: npm run test:e2e
       - run: npm run build
+
+  esp32-build:
+    # Builds the ESP32-S3 bench firmware (no board needed). PlatformIO
+    # downloads ESP-IDF and the toolchain on the first run; cached after that.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio
+            firmware/esp32/.pio
+          key: pio-${{ runner.os }}-${{ hashFiles('firmware/esp32/platformio.ini', 'firmware/esp32/sdkconfig.defaults', 'firmware/esp32/src/idf_component.yml') }}
+      - run: pip install platformio
+      - name: Build ESP32-S3 firmware (bench mode only)
+        run: pio run -d firmware/esp32

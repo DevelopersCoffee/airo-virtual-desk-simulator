@@ -1,11 +1,13 @@
 #include "virtual_hardware_adapter.h"
 
+#include "airo/keypad_codes.h"
+
 namespace airo::host {
 
 namespace {
-constexpr uint32_t kFrameRepeatMs = 50;     // keypad repeats a held frame [ASSUMPTION]
-constexpr uint32_t kFrameActiveMs = 120;    // keypad counts as active this long after a frame
-constexpr uint32_t kHeightValidMs = 1000;
+using keypad::kFrameActiveMs;
+using keypad::kFrameRepeatMs;
+using keypad::kHeightValidMs;
 
 uint32_t bitOf(Action a) { return 1u << static_cast<unsigned>(a); }
 }  // namespace
@@ -37,38 +39,11 @@ void VirtualHardwareAdapter::detach() {
   armed_ = false;
 }
 
-int VirtualHardwareAdapter::encodedCode(Action a) {
-  switch (a) {
-    case Action::Down: return 1;
-    case Action::Up: return 2;
-    case Action::Sitting: return 3;   // Preset 1
-    case Action::Standing: return 4;  // Preset 2
-    case Action::Reset: return 8;     // [UNKNOWN] placeholder
-  }
-  return 0;
-}
+int VirtualHardwareAdapter::encodedCode(Action a) { return keypad::encodedCode(a); }
 
-const char* VirtualHardwareAdapter::lineName(Action a) {
-  switch (a) {
-    case Action::Up: return "up";
-    case Action::Down: return "down";
-    case Action::Sitting: return "sit";
-    case Action::Standing: return "stand";
-    case Action::Reset: return "reset";
-  }
-  return "?";
-}
+const char* VirtualHardwareAdapter::lineName(Action a) { return keypad::lineName(a); }
 
-std::optional<uint8_t> VirtualHardwareAdapter::frameCommand(Action a) {
-  switch (a) {
-    case Action::Up: return frames::kCmdUp;
-    case Action::Down: return frames::kCmdDown;
-    case Action::Sitting: return frames::kCmdMemory1;
-    case Action::Standing: return frames::kCmdMemory2;
-    case Action::Reset: return std::nullopt;  // never sent
-  }
-  return std::nullopt;
-}
+std::optional<uint8_t> VirtualHardwareAdapter::frameCommand(Action a) { return keypad::frameCommand(a); }
 
 void VirtualHardwareAdapter::send(const Json& j) {
   if (send_ && powered_) send_(j.dump());

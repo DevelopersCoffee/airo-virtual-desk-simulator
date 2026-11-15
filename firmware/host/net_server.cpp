@@ -365,7 +365,13 @@ void NetServer::handleWs(int id) {
         break;
       case 0x8:  // close
         queue(id, wsFrame(0x8, payload.substr(0, 2)));
-        if (conns_.count(id)) conns_.at(id).close_after_write = true;
+        if (conns_.count(id)) {
+          // The reply usually goes out at once; then nothing would ever call
+          // writeTo() again and the close went unnoticed until the client's
+          // FIN (the app's lease expired instead of being released).
+          conns_.at(id).close_after_write = true;
+          if (conns_.at(id).out.empty()) drop(id);
+        }
         return;
       case 0x9:  // ping
         queue(id, wsFrame(0xA, payload));

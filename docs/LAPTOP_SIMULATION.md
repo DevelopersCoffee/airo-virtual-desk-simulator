@@ -72,9 +72,10 @@ The board enables injectors and the selector only while heartbeats arrive (200 m
 |---|---|
 | `npm test` | TypeScript unit tests, including the keypad, board fail-safes and the original-controller model |
 | `npm run firmware:test` | C++ unit tests for `airo-core`, the JSON/API layer, frames and the virtual adapter |
-| `npm run test:e2e` | The spec's 12.1 matrix, end to end against the real `airo-host` binary, for each interface case |
+| `npm run test:e2e` | The spec's 12.1 matrix, end to end against the real `airo-host` binary, for each interface case. It runs twice: with `VirtualHardwareAdapter` over `/bridge`, and with the ESP32-S3 build's `Esp32HardwareAdapter` (`--adapter esp32`, bench mode, pin level over `/bench`) |
+| `node scripts/hil.mjs` | The same scenario table against the ESP32-S3 on the bench, see [BENCH_TEST.md](BENCH_TEST.md) |
 
-Spec 12.1 rows and where they are covered (`e2e/test-matrix.e2e.test.ts` unless noted):
+Spec 12.1 rows and where they are covered (the scenario table in `e2e/scenarios.ts` unless noted; `node scripts/hil.mjs --list` prints the ids):
 
 | Row | Test |
 |---|---|
